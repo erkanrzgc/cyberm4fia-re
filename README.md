@@ -1,72 +1,56 @@
-<div align="center">
-
-# cyberm4fia-re
+<h1 align="center">cyberm4fia-re</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/MISSION-REVERSE%20ENGINEERING%20VIA%20RUST-CC2936?style=for-the-badge&labelColor=0D0D0D"/>
+  <img src="https://img.shields.io/badge/mission-reverse%20engineering%20via%20rust-red?style=for-the-badge" alt="mission">
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.75%2B-777777?style=flat-square&labelColor=555555"/>
-  <img src="https://img.shields.io/badge/crates-12%2B-4B6BFB?style=flat-square&labelColor=1A1A2E"/>
-  <img src="https://img.shields.io/badge/license-MIT-CC2936?style=flat-square&labelColor=2D2D2D"/>
-  <img src="https://img.shields.io/badge/tests-58%20passing-2D8A4E?style=flat-square&labelColor=1A1A1A"/>
-  <img src="https://img.shields.io/badge/last%20commit-today-00AA55?style=flat-square&labelColor=1A1A1A"/>
+  <img src="https://img.shields.io/badge/rust-1.75+-blue?style=flat-square&logo=rust" alt="rust">
+  <img src="https://img.shields.io/badge/crates-12+-purple?style=flat-square" alt="crates">
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
+  <img src="https://img.shields.io/badge/tests-58%20passing-orange?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/github/last-commit/erkanrzgc/cyberm4fia-re?style=flat-square" alt="last commit">
 </p>
 
-<br/>
-
-**cyberm4fia-re** is a Rust-powered binary decompiler — parses ELF, PE, and Mach-O executables,
-disassembles x86 & ARM, builds control-flow graphs, detects functions, and generates readable C code.
-
-<br/>
-
-</div>
+<p align="center">
+  <b>cyberm4fia-re</b> is a Rust-powered binary decompiler for ELF, PE, and Mach-O executables —
+  disassembles x86 & ARM, builds control-flow graphs, detects functions, and generates readable C code.
+</p>
 
 ---
 
-<div align="center">
-
 ## Features
 
-<img src="https://img.shields.io/badge/BINARY-FORMATS-4B6BFB?style=flat-square&labelColor=1A1A2E"/>
-
-</div>
+### Binary Formats
 
 | Format | Description |
 |--------|-------------|
-| **ELF** | Linux/Unix executables & shared objects |
-| **PE** | Windows `.exe` / `.dll` (32-bit & 64-bit) |
-| **Mach-O** | macOS executables & dylibs |
+| **ELF** | Linux/Unix executables and shared objects |
+| **PE** | Windows `.exe` and `.dll` (32-bit & 64-bit) |
+| **Mach-O** | macOS executables and dylibs |
 
-<div align="center">
-<img src="https://img.shields.io/badge/DISASM-ARCHITECTURES-4B6BFB?style=flat-square&labelColor=1A1A2E"/>
-</div>
+### Architectures
 
 | Architecture | Engine |
 |---|---|
 | x86 / x86-64 | `iced-x86` |
 | ARM / AArch64 | `capstone` |
 
-<div align="center">
-<img src="https://img.shields.io/badge/RECOVERY-DECOMPILATION-4B6BFB?style=flat-square&labelColor=1A1A2E"/>
-</div>
+### Decompilation Pipeline
 
-- Control-flow graph construction via `petgraph`
-- Function detection — entry point, exports, call targets, MSVC prologues
-- AST lifting with pseudo-register assignments (`mov`, `xor reg, reg`, …)
-- CFG-aware `if/else` recovery with diamond-shape detection
-- Condition recovery from `cmp/test + jcc` sequences
-- Optimization pass — constant folding, dead-code elimination
-- C code generation with address annotations
+| Stage | Description |
+|---|---|
+| **CFG Construction** | Control-flow graph via `petgraph` |
+| **Function Detection** | Entry point, exports, call targets, MSVC prologues |
+| **AST Lifting** | Pseudo-register assignments (`mov`, `xor reg, reg`, …) |
+| **Structure Recovery** | CFG-aware `if/else` with diamond-shape detection |
+| **Condition Recovery** | `cmp/test + jcc` → human-readable expressions |
+| **Optimization** | Constant folding, dead-code elimination |
+| **C Generation** | Address-annotated C output |
 
 ---
 
-<div align="center">
-
 ## Pipeline
-
-</div>
 
 ```
 parse_binary  ──►  disasm (x86 / ARM)  ──►  Vec<Instruction>
@@ -92,15 +76,7 @@ parse_binary  ──►  disasm (x86 / ARM)  ──►  Vec<Instruction>
 
 ---
 
-<div align="center">
-
 ## Quick Start
-
-<img src="https://img.shields.io/badge/INSTALL-REQUIREMENTS-CC2936?style=flat-square&labelColor=2D2D2D"/>
-
-</div>
-
-> Requires: **Rust 1.75+** · **Cargo**
 
 ```bash
 git clone https://github.com/erkanrzgc/cyberm4fia-re.git
@@ -108,16 +84,14 @@ cd cyberm4fia-re
 cargo build --release
 ```
 
-<div align="center">
-<img src="https://img.shields.io/badge/USAGE-CLI-CC2936?style=flat-square&labelColor=2D2D2D"/>
-</div>
-
 ```bash
 # Decompile a binary
 cargo run --release -- -i <binary> -o output.c
 
 # With optimization
 cargo run --release -- -i <binary> -o output.c --optimization basic
+
+# Aggressive optimization
 cargo run --release -- -i <binary> -o output.c --optimization aggressive
 ```
 
@@ -129,11 +103,7 @@ cargo run --release -- -i C:\Windows\System32\notepad.exe -o notepad.c
 
 ---
 
-<div align="center">
-
 ## Output Sample
-
-</div>
 
 ```c
 // 0x11BF  sub_11BF  (export)
@@ -152,13 +122,7 @@ void sub_11BF(void) {
 
 ---
 
-<div align="center">
-
 ## Tests
-
-<img src="https://img.shields.io/badge/TESTS-58%20PASSING-2D8A4E?style=flat-square&labelColor=1A1A1A"/>
-
-</div>
 
 ```bash
 cargo test --lib
@@ -178,11 +142,7 @@ cargo test --lib
 
 ---
 
-<div align="center">
-
 ## Project Structure
-
-</div>
 
 ```
 src/
@@ -195,10 +155,13 @@ src/
 
 ---
 
-<div align="center">
+## Legal Disclaimer
 
-<img src="https://img.shields.io/badge/LICENSE-MIT-CC2936?style=flat-square&labelColor=2D2D2D"/>
+> **This tool is for authorized reverse engineering and educational purposes only.**
+> The developers assume no liability for misuse.
 
-MIT © [erkanrzgc](https://github.com/erkanrzgc)
+---
 
-</div>
+## License
+
+This project is licensed under the MIT License. See the LICENSE file for more details.

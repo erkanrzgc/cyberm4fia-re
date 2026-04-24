@@ -13,24 +13,40 @@ disassembles x86 & ARM, builds control-flow graphs, detects functions, and gener
 
 ---
 
+<div align="center">
+
 ![MISSION](https://img.shields.io/badge/MISSION-REVERSE%20ENGINEERING%20VIA%20RUST-CC2936?style=flat-square&labelColor=2D2D2D)
+
+</div>
 
 ---
 
 ## Features
 
+<div align="center">
+
 ![ANALYSIS](https://img.shields.io/badge/ANALYSIS-BINARY%20FORMATS-4B6BFB?style=flat-square&labelColor=1A1A2E)
+
+</div>
 
 - **ELF** — Linux/Unix executables and shared objects
 - **PE** — Windows `.exe` and `.dll` (32-bit & 64-bit)
 - **Mach-O** — macOS executables and dylibs
 
+<div align="center">
+
 ![DISASM](https://img.shields.io/badge/DISASM-ARCHITECTURES-4B6BFB?style=flat-square&labelColor=1A1A2E)
+
+</div>
 
 - **x86 / x86-64** via `iced-x86`
 - **ARM / AArch64** via `capstone`
 
+<div align="center">
+
 ![RECOVERY](https://img.shields.io/badge/RECOVERY-DECOMPILATION%20PIPELINE-4B6BFB?style=flat-square&labelColor=1A1A2E)
+
+</div>
 
 - Control-flow graph construction (via `petgraph`)
 - Function detection — entry point, exports, call targets, MSVC prologues
@@ -70,7 +86,11 @@ parse_binary  ──►  disasm (x86 / ARM)  ──►  Vec<Instruction>
 
 ## Installation
 
+<div align="center">
+
 ![INSTALL](https://img.shields.io/badge/INSTALL-REQUIREMENTS-CC2936?style=flat-square&labelColor=2D2D2D)
+
+</div>
 
 **Requirements:** Rust 1.75+ · Cargo
 
@@ -84,7 +104,11 @@ cargo build --release
 
 ## Usage
 
+<div align="center">
+
 ![USAGE](https://img.shields.io/badge/USAGE-CLI-CC2936?style=flat-square&labelColor=2D2D2D)
+
+</div>
 
 ```bash
 # Basic decompile
@@ -126,7 +150,11 @@ void sub_11BF(void) {
 
 ## Tests
 
+<div align="center">
+
 ![TESTS](https://img.shields.io/badge/TESTS-58%20PASSING-2D8A4E?style=flat-square&labelColor=1A1A1A)
+
+</div>
 
 ```bash
 cargo test --lib
@@ -161,6 +189,10 @@ src/
 
 ## License
 
+<div align="center">
+
 ![LICENSE](https://img.shields.io/badge/LICENSE-MIT-CC2936?style=flat-square&labelColor=2D2D2D)
 
 MIT © [erkanrzgc](https://github.com/erkanrzgc)
+
+</div>

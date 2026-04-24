@@ -1,3 +1,13 @@
+</div>
+
+---
+
+<div align="center">
+
+![MISSION](https://img.shields.io/badge/MISSION-REVERSE%20ENGINEERING%20VIA%20RUST-CC2936?style=flat-square&labelColor=2D2D2D)
+
+</div>
+
 <div align="center">
 
 ![rust](https://img.shields.io/badge/rust-1.75%2B-gray?style=flat-square&labelColor=555555&color=777777)
@@ -8,16 +18,6 @@
 
 **cyberm4fia-re** is a Rust-powered binary decompiler — parses ELF, PE, and Mach-O executables,
 disassembles x86 & ARM, builds control-flow graphs, detects functions, and generates readable C code.
-
-</div>
-
----
-
-<div align="center">
-
-![MISSION](https://img.shields.io/badge/MISSION-REVERSE%20ENGINEERING%20VIA%20RUST-CC2936?style=flat-square&labelColor=2D2D2D)
-
-</div>
 
 ---
 

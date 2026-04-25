@@ -159,6 +159,62 @@ mod structure_tests {
     }
 
     #[test]
+    fn stack_mov_load_and_store_become_assignments() {
+        let mut func = function_with(vec![
+            inline(0x3000, "mov qword ptr [rbp-8], eax"),
+            inline(0x3001, "mov rax, qword ptr [rbp-8]"),
+            inline(0x3002, "mov dword ptr [rbp+10h], 2Ah"),
+        ]);
+
+        structure_function(&mut func);
+
+        assert!(matches!(
+            func.body.as_slice(),
+            [
+                Statement::Expression(Expression::Assignment { target: store_target, value: store_value }),
+                Statement::Expression(Expression::Assignment { target: load_target, value: load_value }),
+                Statement::Expression(Expression::Assignment { target: arg_target, value: arg_value }),
+            ] if matches!(store_target.as_ref(), Expression::Variable(name) if name == "local_8")
+                && matches!(store_value.as_ref(), Expression::Variable(name) if name == "eax")
+                && matches!(load_target.as_ref(), Expression::Variable(name) if name == "rax")
+                && matches!(load_value.as_ref(), Expression::Variable(name) if name == "local_8")
+                && matches!(arg_target.as_ref(), Expression::Variable(name) if name == "arg_10")
+                && matches!(arg_value.as_ref(), Expression::IntegerLiteral(42))
+        ));
+    }
+
+    #[test]
+    fn cfg_path_declares_stack_variables_used_by_assignments() {
+        let cfg = ControlFlowGraph::from_x86(vec![]);
+        let mut func = function_with(vec![inline(0x3000, "mov qword ptr [rbp-8], eax")]);
+
+        structure_function_with_cfg(&mut func, &cfg);
+
+        assert!(matches!(
+            &func.body[0],
+            Statement::VariableDeclaration {
+                name,
+                type_info: TypeInfo::U64,
+                init: None,
+            } if name == "eax"
+        ));
+        assert!(matches!(
+            &func.body[1],
+            Statement::VariableDeclaration {
+                name,
+                type_info: TypeInfo::U64,
+                init: None,
+            } if name == "local_8"
+        ));
+        assert!(matches!(
+            &func.body[2],
+            Statement::Expression(Expression::Assignment { target, value })
+                if matches!(target.as_ref(), Expression::Variable(name) if name == "local_8")
+                    && matches!(value.as_ref(), Expression::Variable(name) if name == "eax")
+        ));
+    }
+
+    #[test]
     fn cfg_path_declares_registers_used_by_assignments() {
         let cfg = ControlFlowGraph::from_x86(vec![]);
         let mut func = function_with(vec![inline(0x3000, "mov eax, 2")]);

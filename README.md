@@ -22,13 +22,13 @@
   <img src="https://img.shields.io/badge/rust-1.75+-blue?style=flat-square&logo=rust" alt="rust">
   <img src="https://img.shields.io/badge/crates-12+-purple?style=flat-square" alt="crates">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/tests-58%20passing-orange?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/badge/tests-60%20passing-orange?style=flat-square" alt="tests">
   <img src="https://img.shields.io/github/last-commit/erkanrzgc/cyberm4fia-re?style=flat-square" alt="last commit">
 </p>
 
 <p align="center">
   <b>cyberm4fia-re</b> is a Rust-powered binary decompiler for ELF, PE, and Mach-O executables —
-  disassembles x86 & ARM, builds control-flow graphs, detects functions, and generates readable C code.
+  disassembles x86 & ARM, builds control-flow graphs, detects functions, recovers simple stack variables, and generates readable C code.
 </p>
 
 ---
@@ -56,9 +56,10 @@
 |---|---|
 | **CFG Construction** | Control-flow graph via `petgraph` |
 | **Function Detection** | Entry point, exports, call targets, MSVC prologues |
-| **AST Lifting** | Pseudo-register assignments (`mov`, `xor reg, reg`, …) |
+| **AST Lifting** | Pseudo-register and stack assignments (`mov`, `xor reg, reg`, `[rbp-8]`, …) |
 | **Structure Recovery** | CFG-aware `if/else` with diamond-shape detection |
 | **Condition Recovery** | `cmp/test + jcc` → human-readable expressions |
+| **Stack Recovery** | x86 `[rbp±off]` / `[rsp±off]` operands → `local_*`, `arg_*`, `stack_*` variables |
 | **Optimization** | Constant folding, dead-code elimination |
 | **C Generation** | Address-annotated C output |
 
@@ -151,7 +152,7 @@ cargo test --lib
 | `analysis::functions` | 7 |
 | `analysis::strings` | 7 |
 | `decompiler::lifter` | 4 |
-| `decompiler::structure` | 8 |
+| `decompiler::structure` | 10 |
 | `decompiler::other` | 6 |
 
 ---

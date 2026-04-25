@@ -47,7 +47,7 @@ fn structure_statement(statement: &mut Statement) {
             *statement = Statement::Return(None);
         }
         Statement::InlineAsm { disasm, .. } => {
-            if let Some(assignment) = simple_register_assignment(disasm) {
+            if let Some(assignment) = simple_assignment(disasm) {
                 *statement = assignment;
             }
         }
@@ -92,14 +92,11 @@ fn is_void_return(disasm: &str) -> bool {
     )
 }
 
-fn simple_register_assignment(disasm: &str) -> Option<Statement> {
+fn simple_assignment(disasm: &str) -> Option<Statement> {
     let (mnemonic, operands) = split_instruction(disasm)?;
     let (target, value) = split_operands(&operands)?;
-    if !is_register_name(&target) {
-        return None;
-    }
 
-    let target_expr = Expression::Variable(target.to_ascii_lowercase());
+    let target_expr = assignment_target_expression(&target)?;
     let value_expr = match mnemonic.as_str() {
         "mov" | "movzx" | "movsxd" => operand_expression(&value)?,
         "xor" if target.eq_ignore_ascii_case(&value) => Expression::IntegerLiteral(0),
@@ -516,8 +513,105 @@ fn operand_expression(operand: &str) -> Option<Expression> {
     if is_register_name(normalized) {
         return Some(Expression::Variable(normalized.to_ascii_lowercase()));
     }
+    if let Some(name) = stack_variable_name(normalized) {
+        return Some(Expression::Variable(name));
+    }
 
     parse_integer_literal(normalized).map(Expression::IntegerLiteral)
+}
+
+fn assignment_target_expression(operand: &str) -> Option<Expression> {
+    let normalized = operand.trim();
+    if is_register_name(normalized) {
+        return Some(Expression::Variable(normalized.to_ascii_lowercase()));
+    }
+    stack_variable_name(normalized).map(Expression::Variable)
+}
+
+fn stack_variable_name(operand: &str) -> Option<String> {
+    let memory = normalize_memory_operand(operand)?;
+    let compact = memory.replace(' ', "");
+
+    for base in ["rbp", "ebp"] {
+        if let Some(rest) = compact.strip_prefix(base) {
+            return stack_name_from_offset(rest, "local", "arg");
+        }
+    }
+
+    for base in ["rsp", "esp"] {
+        if let Some(rest) = compact.strip_prefix(base) {
+            return stack_name_from_offset(rest, "stack_m", "stack");
+        }
+    }
+
+    None
+}
+
+fn normalize_memory_operand(operand: &str) -> Option<String> {
+    let mut normalized = operand.trim().to_ascii_lowercase();
+    for prefix in [
+        "byte ptr ",
+        "word ptr ",
+        "dword ptr ",
+        "qword ptr ",
+        "tword ptr ",
+        "oword ptr ",
+        "xmmword ptr ",
+        "ymmword ptr ",
+        "zmmword ptr ",
+    ] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            normalized = rest.trim().to_string();
+            break;
+        }
+    }
+
+    let inner = normalized
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))?;
+    Some(inner.to_string())
+}
+
+fn stack_name_from_offset(
+    rest: &str,
+    negative_prefix: &str,
+    positive_prefix: &str,
+) -> Option<String> {
+    let (prefix, offset) = if let Some(offset) = rest.strip_prefix('-') {
+        (negative_prefix, offset)
+    } else if let Some(offset) = rest.strip_prefix('+') {
+        (positive_prefix, offset)
+    } else {
+        return None;
+    };
+
+    let component = normalized_offset_component(offset)?;
+    Some(format!("{}_{}", prefix, component))
+}
+
+fn normalized_offset_component(offset: &str) -> Option<String> {
+    let trimmed = offset.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let without_hex_prefix = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    let without_hex_suffix = without_hex_prefix
+        .strip_suffix('h')
+        .or_else(|| without_hex_prefix.strip_suffix('H'))
+        .unwrap_or(without_hex_prefix);
+
+    let component = without_hex_suffix.trim_start_matches('0');
+    if component.is_empty() {
+        Some("0".to_string())
+    } else if component.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(component.to_ascii_lowercase())
+    } else {
+        None
+    }
 }
 
 fn parse_integer_literal(value: &str) -> Option<i64> {
@@ -691,7 +785,7 @@ fn collect_pseudo_registers_from_statement(
 
 fn collect_pseudo_registers_from_expression(expr: &Expression, registers: &mut BTreeSet<String>) {
     match expr {
-        Expression::Variable(name) if is_register_name(name) => {
+        Expression::Variable(name) if is_register_name(name) || is_stack_variable_name(name) => {
             registers.insert(name.to_ascii_lowercase());
         }
         Expression::BinaryOperation { left, right, .. } => {
@@ -799,6 +893,11 @@ fn is_register_name(value: &str) -> bool {
             | "r15d"
             | "r15"
     )
+}
+
+fn is_stack_variable_name(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.starts_with("local_") || lower.starts_with("arg_") || lower.starts_with("stack_")
 }
 
 trait BinaryOperatorText {

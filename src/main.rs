@@ -2,7 +2,9 @@
 
 use clap::Parser;
 use decompiler::analysis::functions::FunctionDetectionInputs;
-use decompiler::analysis::{FunctionDetector, StringExtractor};
+use decompiler::analysis::{
+    FunctionDetector, RuntimeDetectionInputs, RuntimeDetector, StringExtractor,
+};
 use decompiler::binary::parse_binary;
 use decompiler::decompiler::{
     annotate_string_references, escape_c_string, lift_functions, structure_functions_with_cfg,
@@ -56,9 +58,9 @@ fn main() -> anyhow::Result<()> {
     info!("Entry point: 0x{:X}", binary.entry_point());
 
     // Get code sections
-    let code_sections: Vec<_> = binary
-        .sections()
-        .into_iter()
+    let sections = binary.sections();
+    let code_sections: Vec<_> = sections
+        .iter()
         .filter(|s| s.characteristics.is_code)
         .collect();
 
@@ -129,7 +131,7 @@ fn main() -> anyhow::Result<()> {
     info!("Extracting strings...");
     let string_extractor = StringExtractor::new();
     let mut all_strings = Vec::new();
-    for section in &binary.sections() {
+    for section in &sections {
         if section.characteristics.is_data {
             let strings = string_extractor.extract(&section.raw_data, section.virtual_address);
             info!(
@@ -138,6 +140,24 @@ fn main() -> anyhow::Result<()> {
                 section.name
             );
             all_strings.extend(strings);
+        }
+    }
+
+    // Detect source-language/runtime family hints before decompilation output.
+    let runtime_matches = RuntimeDetector::new().detect(RuntimeDetectionInputs {
+        sections: &sections,
+        imports: &imports,
+        exports: &exports,
+        strings: &all_strings,
+    });
+    if runtime_matches.is_empty() {
+        info!("No runtime/language family hints detected");
+    } else {
+        for runtime in &runtime_matches {
+            info!(
+                "Runtime hint: {} ({}%) - {}",
+                runtime.name, runtime.confidence, runtime.guidance
+            );
         }
     }
 
@@ -155,7 +175,22 @@ fn main() -> anyhow::Result<()> {
     output.push_str(&format!("// Binary: {}\n", cli.input));
     output.push_str(&format!("// Format: {}\n", binary.format().name()));
     output.push_str(&format!("// Architecture: {}\n", binary.architecture()));
-    output.push_str(&format!("// Entry point: 0x{:X}\n\n", binary.entry_point()));
+    output.push_str(&format!("// Entry point: 0x{:X}\n", binary.entry_point()));
+    if runtime_matches.is_empty() {
+        output.push_str("// Runtime hints: none detected\n\n");
+    } else {
+        output.push_str("// Runtime hints:\n");
+        for runtime in &runtime_matches {
+            output.push_str(&format!(
+                "// - {} ({}%): {}\n",
+                runtime.name,
+                runtime.confidence,
+                runtime.evidence.join("; ")
+            ));
+            output.push_str(&format!("//   Guidance: {}\n", runtime.guidance));
+        }
+        output.push('\n');
+    }
 
     // Add includes
     output.push_str("#include <stdint.h>\n");

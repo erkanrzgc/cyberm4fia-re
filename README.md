@@ -22,14 +22,15 @@
   <img src="https://img.shields.io/badge/rust-1.75+-blue?style=flat-square&logo=rust" alt="rust">
   <img src="https://img.shields.io/badge/crates-12+-purple?style=flat-square" alt="crates">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/tests-92%20passing-orange?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/badge/tests-96%20passing-orange?style=flat-square" alt="tests">
   <img src="https://img.shields.io/github/last-commit/erkanrzgc/cyberm4fia-re?style=flat-square" alt="last commit">
 </p>
 
 <p align="center">
   <b>cyberm4fia-re</b> is a Rust-powered binary decompiler for ELF, PE, and Mach-O executables —
-  disassembles x86 & ARM, detects runtime/language families, builds control-flow graphs, detects functions,
-  recovers simple stack variables, annotates string references, and generates syntax-safe readable C code.
+  disassembles x86 & ARM, detects runtime/language families, emits runtime-specific analysis reports,
+  builds control-flow graphs, detects functions, recovers simple stack variables, annotates string references,
+  and generates syntax-safe readable C code.
 </p>
 
 ---
@@ -56,6 +57,7 @@
 | Stage | Description |
 |---|---|
 | **Runtime Detection** | Python/PyInstaller/Nuitka, Dart/Flutter, .NET, Go, Rust, Electron/Node, JVM hints |
+| **Runtime Reports** | Actionable Python extraction, Dart/Flutter snapshot, CLR/IL, Go/Rust, Electron, JVM guidance |
 | **CFG Construction** | Control-flow graph via `petgraph` |
 | **Function Detection** | Entry point, exports, call targets, MSVC prologues |
 | **AST Lifting** | Pseudo-register and stack assignments (`mov`, `xor reg, reg`, `[rbp-8]`, …) |
@@ -157,6 +159,7 @@ cargo test --lib
 | `binary::parser` | 5 |
 | `analysis::functions` | 7 |
 | `analysis::runtime` | 10 |
+| `analysis::runtime_report` | 4 |
 | `analysis::strings` | 7 |
 | `decompiler::c_syntax` | 12 |
 | `decompiler::lifter` | 8 |
@@ -171,7 +174,7 @@ cargo test --lib
 src/
 ├── binary/         # ELF · PE · Mach-O parsing  (goblin)
 ├── disasm/         # x86 (iced-x86) · ARM (capstone) · CFG
-├── analysis/       # function detection · runtime hints · string extraction · types
+├── analysis/       # function detection · runtime hints/reports · string extraction · types
 ├── decompiler/     # AST · lifter · structure · string refs · C syntax helpers · optimizer · C gen
 └── utils/          # error types
 ```

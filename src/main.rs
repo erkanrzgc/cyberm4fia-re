@@ -3,12 +3,13 @@
 use clap::Parser;
 use decompiler::analysis::functions::FunctionDetectionInputs;
 use decompiler::analysis::{
-    FunctionDetector, RuntimeDetectionInputs, RuntimeDetector, StringExtractor,
+    FunctionDetector, RuntimeDetectionInputs, RuntimeDetector, RuntimeReportBuilder,
+    RuntimeReportInputs, StringExtractor,
 };
 use decompiler::binary::parse_binary;
 use decompiler::decompiler::{
-    annotate_string_references, escape_c_string, lift_functions, structure_functions_with_cfg,
-    CGenerator, CGeneratorConfig, OptimizationLevel, Optimizer,
+    annotate_string_references, escape_c_string, lift_functions, sanitize_c_comment,
+    structure_functions_with_cfg, CGenerator, CGeneratorConfig, OptimizationLevel, Optimizer,
 };
 use decompiler::disasm::{ArmDisassembler, ControlFlowGraph, Instruction, X86Disassembler};
 use tracing::{error, info};
@@ -160,6 +161,11 @@ fn main() -> anyhow::Result<()> {
             );
         }
     }
+    let runtime_reports = RuntimeReportBuilder::new().build(RuntimeReportInputs {
+        runtime_matches: &runtime_matches,
+        sections: &sections,
+        strings: &all_strings,
+    });
 
     // Build control flow graph
     info!("Building control flow graph...");
@@ -183,11 +189,38 @@ fn main() -> anyhow::Result<()> {
         for runtime in &runtime_matches {
             output.push_str(&format!(
                 "// - {} ({}%): {}\n",
-                runtime.name,
+                sanitize_c_comment(runtime.name),
                 runtime.confidence,
-                runtime.evidence.join("; ")
+                sanitize_c_comment(&runtime.evidence.join("; "))
             ));
-            output.push_str(&format!("//   Guidance: {}\n", runtime.guidance));
+            output.push_str(&format!(
+                "//   Guidance: {}\n",
+                sanitize_c_comment(runtime.guidance)
+            ));
+        }
+        if !runtime_reports.is_empty() {
+            output.push_str("// Runtime reports:\n");
+            for report in &runtime_reports {
+                output.push_str(&format!(
+                    "// - {}: {}\n",
+                    sanitize_c_comment(&report.title),
+                    sanitize_c_comment(&report.summary)
+                ));
+                for artifact in &report.artifacts {
+                    output.push_str(&format!(
+                        "//   Artifact: {} - {}\n",
+                        sanitize_c_comment(&artifact.name),
+                        sanitize_c_comment(&artifact.detail)
+                    ));
+                }
+                for action in &report.actions {
+                    output.push_str(&format!(
+                        "//   Action: {} - {}\n",
+                        sanitize_c_comment(&action.label),
+                        sanitize_c_comment(&action.detail)
+                    ));
+                }
+            }
         }
         output.push('\n');
     }

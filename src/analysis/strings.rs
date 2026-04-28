@@ -88,7 +88,7 @@ impl StringExtractor {
         let mut current = Vec::new();
 
         for (i, &byte) in data.iter().enumerate() {
-            if byte >= 0x20 && byte <= 0x7E {
+            if (0x20..=0x7E).contains(&byte) {
                 // Printable ASCII
                 if start.is_none() {
                     start = Some(i);

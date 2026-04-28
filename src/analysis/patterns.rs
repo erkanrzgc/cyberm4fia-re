@@ -28,53 +28,48 @@ struct Pattern {
 impl PatternMatcher {
     /// Create a new pattern matcher
     pub fn new() -> Self {
-        let mut patterns = Vec::new();
-
-        // Common function prologues
-        patterns.push(Pattern {
-            name: "function_prologue_x86".to_string(),
-            regex: Regex::new(r"push (ebp|rbp);\s*mov (ebp|rbp), (esp|rsp)").unwrap(),
-            confidence: 0.9,
-        });
-
-        patterns.push(Pattern {
-            name: "function_prologue_x64".to_string(),
-            regex: Regex::new(r"push rbp;\s*mov rbp, rsp").unwrap(),
-            confidence: 0.9,
-        });
-
-        // String operations
-        patterns.push(Pattern {
-            name: "string_copy".to_string(),
-            regex: Regex::new(r"mov (eax|rax),\s*\[.*\];\s*test (eax|rax),\s*(eax|rax)").unwrap(),
-            confidence: 0.7,
-        });
-
-        // Loop patterns
-        patterns.push(Pattern {
-            name: "for_loop".to_string(),
-            regex: Regex::new(r"dec (eax|ecx|rcx);\s*jnz").unwrap(),
-            confidence: 0.8,
-        });
-
-        patterns.push(Pattern {
-            name: "while_loop".to_string(),
-            regex: Regex::new(r"cmp.*;\s*j[ne|ge|le]").unwrap(),
-            confidence: 0.7,
-        });
-
-        // Memory allocation
-        patterns.push(Pattern {
-            name: "malloc_call".to_string(),
-            regex: Regex::new(r"call.*malloc").unwrap(),
-            confidence: 0.95,
-        });
-
-        patterns.push(Pattern {
-            name: "free_call".to_string(),
-            regex: Regex::new(r"call.*free").unwrap(),
-            confidence: 0.95,
-        });
+        let patterns = vec![
+            // Common function prologues
+            Pattern {
+                name: "function_prologue_x86".to_string(),
+                regex: Regex::new(r"push (ebp|rbp);\s*mov (ebp|rbp), (esp|rsp)").unwrap(),
+                confidence: 0.9,
+            },
+            Pattern {
+                name: "function_prologue_x64".to_string(),
+                regex: Regex::new(r"push rbp;\s*mov rbp, rsp").unwrap(),
+                confidence: 0.9,
+            },
+            // String operations
+            Pattern {
+                name: "string_copy".to_string(),
+                regex: Regex::new(r"mov (eax|rax),\s*\[.*\];\s*test (eax|rax),\s*(eax|rax)")
+                    .unwrap(),
+                confidence: 0.7,
+            },
+            // Loop patterns
+            Pattern {
+                name: "for_loop".to_string(),
+                regex: Regex::new(r"dec (eax|ecx|rcx);\s*jnz").unwrap(),
+                confidence: 0.8,
+            },
+            Pattern {
+                name: "while_loop".to_string(),
+                regex: Regex::new(r"cmp.*;\s*j[ne|ge|le]").unwrap(),
+                confidence: 0.7,
+            },
+            // Memory allocation
+            Pattern {
+                name: "malloc_call".to_string(),
+                regex: Regex::new(r"call.*malloc").unwrap(),
+                confidence: 0.95,
+            },
+            Pattern {
+                name: "free_call".to_string(),
+                regex: Regex::new(r"call.*free").unwrap(),
+                confidence: 0.95,
+            },
+        ];
 
         Self { patterns }
     }

@@ -54,7 +54,7 @@ impl ElfBinary {
         let sections = elf
             .section_headers
             .iter()
-            .filter_map(|section| {
+            .map(|section| {
                 let name = elf
                     .shdr_strtab
                     .get_at(section.sh_name)
@@ -78,13 +78,13 @@ impl ElfBinary {
                     is_executable: section.sh_flags & shf_exec != 0,
                 };
 
-                Some(SectionInfo {
+                SectionInfo {
                     name,
                     virtual_address,
                     size,
                     raw_data,
                     characteristics,
-                })
+                }
             })
             .collect();
 

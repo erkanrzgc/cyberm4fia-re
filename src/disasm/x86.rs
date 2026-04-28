@@ -94,16 +94,17 @@ pub struct X86Instruction {
     pub near_branch_target: Option<u64>,
 }
 
-impl X86Instruction {
-    /// Get the full instruction string
-    pub fn to_string(&self) -> String {
+impl std::fmt::Display for X86Instruction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.operands.is_empty() {
-            self.mnemonic.clone()
+            write!(f, "{}", self.mnemonic)
         } else {
-            format!("{} {}", self.mnemonic, self.operands)
+            write!(f, "{} {}", self.mnemonic, self.operands)
         }
     }
+}
 
+impl X86Instruction {
     /// Check if this is a control flow instruction
     pub fn is_control_flow(&self) -> bool {
         let mnemonic = self.mnemonic.to_lowercase();

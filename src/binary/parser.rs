@@ -122,6 +122,22 @@ pub struct ExportInfo {
     pub ordinal: Option<u16>,
 }
 
+/// Parse a binary file
+pub fn parse_binary(path: &Path) -> Result<Box<dyn BinaryInfo>> {
+    let data = std::fs::read(path)?;
+
+    let format = BinaryFormat::from_magic(&data)
+        .ok_or_else(|| Error::UnsupportedFormat("Unknown binary format".to_string()))?;
+
+    tracing::info!("Detected format: {}", format.name());
+
+    match format {
+        BinaryFormat::Pe => super::pe::PeParser.parse(&data),
+        BinaryFormat::Elf => super::elf::ElfParser.parse(&data),
+        BinaryFormat::MachO => super::macho::MachOParser.parse(&data),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,21 +184,5 @@ mod tests {
         assert_eq!(BinaryFormat::Pe.name(), "PE/EXE");
         assert_eq!(BinaryFormat::Elf.name(), "ELF");
         assert_eq!(BinaryFormat::MachO.name(), "Mach-O");
-    }
-}
-
-/// Parse a binary file
-pub fn parse_binary(path: &Path) -> Result<Box<dyn BinaryInfo>> {
-    let data = std::fs::read(path)?;
-
-    let format = BinaryFormat::from_magic(&data)
-        .ok_or_else(|| Error::UnsupportedFormat("Unknown binary format".to_string()))?;
-
-    tracing::info!("Detected format: {}", format.name());
-
-    match format {
-        BinaryFormat::Pe => super::pe::PeParser::default().parse(&data),
-        BinaryFormat::Elf => super::elf::ElfParser::default().parse(&data),
-        BinaryFormat::MachO => super::macho::MachOParser::default().parse(&data),
     }
 }

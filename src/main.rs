@@ -5,8 +5,8 @@ use decompiler::analysis::functions::FunctionDetectionInputs;
 use decompiler::analysis::{FunctionDetector, StringExtractor};
 use decompiler::binary::parse_binary;
 use decompiler::decompiler::{
-    lift_functions, structure_functions_with_cfg, CGenerator, CGeneratorConfig, OptimizationLevel,
-    Optimizer,
+    annotate_string_references, escape_c_string, lift_functions, structure_functions_with_cfg,
+    CGenerator, CGeneratorConfig, OptimizationLevel, Optimizer,
 };
 use decompiler::disasm::{ArmDisassembler, ControlFlowGraph, Instruction, X86Disassembler};
 use tracing::{error, info};
@@ -167,7 +167,8 @@ fn main() -> anyhow::Result<()> {
         for s in &all_strings {
             output.push_str(&format!(
                 "const char str_{:X}[] = \"{}\";\n",
-                s.address, s.value
+                s.address,
+                escape_c_string(&s.value)
             ));
         }
         output.push('\n');
@@ -180,6 +181,7 @@ fn main() -> anyhow::Result<()> {
     // operate on the AST, not on raw instruction streams.
     let mut ast_functions = lift_functions(&functions);
     structure_functions_with_cfg(&mut ast_functions, &cfg);
+    annotate_string_references(&mut ast_functions, &all_strings);
 
     // Apply optimization (currently a no-op for InlineAsm statements, but
     // the hook is in place for when structuring produces real expressions).

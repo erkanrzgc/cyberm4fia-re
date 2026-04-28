@@ -376,7 +376,8 @@ fn branch_condition(function: &Function, branch_index: usize) -> Option<Expressi
 
     Some(Expression::Unknown(format!(
         "/* condition: 0x{:X} {} */ 1",
-        address, disasm
+        address,
+        sanitize_comment(disasm)
     )))
 }
 
@@ -415,7 +416,7 @@ fn recovered_condition(
             branch_disasm,
             &branch_mnemonic,
         ),
-        _ => return None,
+        _ => None,
     }
 }
 
@@ -427,7 +428,7 @@ fn recover_cmp_condition(
 ) -> Option<Expression> {
     let (left, right) = split_operands(operands)?;
     let op = cmp_operator_for_branch(branch_mnemonic)?;
-    let expression_text = format!("{} {} {}", left, op.as_str(), right);
+    let expression_text = format!("{} {} {}", left, op.symbol(), right);
 
     let Some(left_expr) = operand_expression(&left) else {
         return Some(comment_condition(
@@ -466,7 +467,7 @@ fn recover_test_condition(
     };
 
     if left.eq_ignore_ascii_case(&right) {
-        let expression_text = format!("{} {} 0", left, op.as_str());
+        let expression_text = format!("{} {} 0", left, op.symbol());
         let Some(left_expr) = operand_expression(&left) else {
             return Some(comment_condition(
                 &expression_text,
@@ -481,7 +482,7 @@ fn recover_test_condition(
         });
     }
 
-    let expression_text = format!("({} & {}) {} 0", left, right, op.as_str());
+    let expression_text = format!("({} & {}) {} 0", left, right, op.symbol());
     let Some(left_expr) = operand_expression(&left) else {
         return Some(comment_condition(
             &expression_text,
@@ -511,7 +512,7 @@ fn recover_test_condition(
 fn operand_expression(operand: &str) -> Option<Expression> {
     let normalized = operand.trim();
     if is_register_name(normalized) {
-        return Some(Expression::Variable(normalized.to_ascii_lowercase()));
+        return Some(Expression::Variable(canonicalize_register_name(normalized)));
     }
     if let Some(name) = stack_variable_name(normalized) {
         return Some(Expression::Variable(name));
@@ -523,7 +524,7 @@ fn operand_expression(operand: &str) -> Option<Expression> {
 fn assignment_target_expression(operand: &str) -> Option<Expression> {
     let normalized = operand.trim();
     if is_register_name(normalized) {
-        return Some(Expression::Variable(normalized.to_ascii_lowercase()));
+        return Some(Expression::Variable(canonicalize_register_name(normalized)));
     }
     stack_variable_name(normalized).map(Expression::Variable)
 }
@@ -769,11 +770,12 @@ fn collect_pseudo_registers_from_statement(
                 collect_pseudo_registers_from_statement(nested, registers);
             }
         }
-        Statement::VariableDeclaration { init, .. } => {
-            if let Some(init) = init {
-                collect_pseudo_registers_from_expression(init, registers);
-            }
+        Statement::VariableDeclaration {
+            init: Some(init), ..
+        } => {
+            collect_pseudo_registers_from_expression(init, registers);
         }
+        Statement::VariableDeclaration { init: None, .. } => {}
         Statement::Block(statements) => {
             for nested in statements {
                 collect_pseudo_registers_from_statement(nested, registers);
@@ -785,7 +787,10 @@ fn collect_pseudo_registers_from_statement(
 
 fn collect_pseudo_registers_from_expression(expr: &Expression, registers: &mut BTreeSet<String>) {
     match expr {
-        Expression::Variable(name) if is_register_name(name) || is_stack_variable_name(name) => {
+        Expression::Variable(name) if is_register_name(name) => {
+            registers.insert(canonicalize_register_name(name));
+        }
+        Expression::Variable(name) if is_stack_variable_name(name) => {
             registers.insert(name.to_ascii_lowercase());
         }
         Expression::BinaryOperation { left, right, .. } => {
@@ -819,6 +824,30 @@ fn collect_pseudo_registers_from_expression(expr: &Expression, registers: &mut B
         }
         _ => {}
     }
+}
+
+fn canonicalize_register_name(value: &str) -> String {
+    let lower = value.to_ascii_lowercase();
+    match lower.as_str() {
+        "al" | "ah" | "ax" | "eax" | "rax" => "rax",
+        "bl" | "bh" | "bx" | "ebx" | "rbx" => "rbx",
+        "cl" | "ch" | "cx" | "ecx" | "rcx" => "rcx",
+        "dl" | "dh" | "dx" | "edx" | "rdx" => "rdx",
+        "sil" | "si" | "esi" | "rsi" => "rsi",
+        "dil" | "di" | "edi" | "rdi" => "rdi",
+        "bpl" | "bp" | "ebp" | "rbp" => "rbp",
+        "spl" | "sp" | "esp" | "rsp" => "rsp",
+        "r8b" | "r8w" | "r8d" | "r8" => "r8",
+        "r9b" | "r9w" | "r9d" | "r9" => "r9",
+        "r10b" | "r10w" | "r10d" | "r10" => "r10",
+        "r11b" | "r11w" | "r11d" | "r11" => "r11",
+        "r12b" | "r12w" | "r12d" | "r12" => "r12",
+        "r13b" | "r13w" | "r13d" | "r13" => "r13",
+        "r14b" | "r14w" | "r14d" | "r14" => "r14",
+        "r15b" | "r15w" | "r15d" | "r15" => "r15",
+        _ => lower.as_str(),
+    }
+    .to_string()
 }
 
 fn is_register_name(value: &str) -> bool {
@@ -901,11 +930,11 @@ fn is_stack_variable_name(value: &str) -> bool {
 }
 
 trait BinaryOperatorText {
-    fn as_str(self) -> &'static str;
+    fn symbol(self) -> &'static str;
 }
 
 impl BinaryOperatorText for BinaryOperator {
-    fn as_str(self) -> &'static str {
+    fn symbol(self) -> &'static str {
         match self {
             BinaryOperator::Equal => "==",
             BinaryOperator::NotEqual => "!=",

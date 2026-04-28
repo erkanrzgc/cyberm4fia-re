@@ -2,14 +2,20 @@
 
 pub mod ast;
 pub mod c_generator;
+pub mod c_syntax;
 pub mod lifter;
 pub mod optimization;
+pub mod string_refs;
 pub mod structure;
 
 pub use ast::{AstNode, AstNodeType, Expression, Function, Statement};
 pub use c_generator::{CGenerator, CGeneratorConfig};
+pub use c_syntax::{
+    escape_c_string, quote_c_string, sanitize_c_comment, sanitize_c_identifier, unique_c_identifier,
+};
 pub use lifter::{lift_function, lift_functions};
 pub use optimization::{OptimizationLevel, Optimizer};
+pub use string_refs::annotate_string_references;
 pub use structure::{
     structure_function, structure_function_with_cfg, structure_functions,
     structure_functions_with_cfg,
@@ -124,7 +130,7 @@ mod structure_tests {
         assert!(matches!(
             func.body.as_slice(),
             [Statement::Expression(Expression::Assignment { target, value })]
-                if matches!(target.as_ref(), Expression::Variable(name) if name == "eax")
+                if matches!(target.as_ref(), Expression::Variable(name) if name == "rax")
                     && matches!(value.as_ref(), Expression::IntegerLiteral(2))
         ));
     }
@@ -138,7 +144,7 @@ mod structure_tests {
         assert!(matches!(
             func.body.as_slice(),
             [Statement::Expression(Expression::Assignment { target, value })]
-                if matches!(target.as_ref(), Expression::Variable(name) if name == "r8d")
+                if matches!(target.as_ref(), Expression::Variable(name) if name == "r8")
                     && matches!(value.as_ref(), Expression::IntegerLiteral(0))
         ));
     }
@@ -175,7 +181,7 @@ mod structure_tests {
                 Statement::Expression(Expression::Assignment { target: load_target, value: load_value }),
                 Statement::Expression(Expression::Assignment { target: arg_target, value: arg_value }),
             ] if matches!(store_target.as_ref(), Expression::Variable(name) if name == "local_8")
-                && matches!(store_value.as_ref(), Expression::Variable(name) if name == "eax")
+                && matches!(store_value.as_ref(), Expression::Variable(name) if name == "rax")
                 && matches!(load_target.as_ref(), Expression::Variable(name) if name == "rax")
                 && matches!(load_value.as_ref(), Expression::Variable(name) if name == "local_8")
                 && matches!(arg_target.as_ref(), Expression::Variable(name) if name == "arg_10")
@@ -196,7 +202,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "local_8"
         ));
         assert!(matches!(
             &func.body[1],
@@ -204,13 +210,13 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "local_8"
+            } if name == "rax"
         ));
         assert!(matches!(
             &func.body[2],
             Statement::Expression(Expression::Assignment { target, value })
                 if matches!(target.as_ref(), Expression::Variable(name) if name == "local_8")
-                    && matches!(value.as_ref(), Expression::Variable(name) if name == "eax")
+                    && matches!(value.as_ref(), Expression::Variable(name) if name == "rax")
         ));
     }
 
@@ -227,12 +233,12 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "rax"
         ));
         assert!(matches!(
             &func.body[1],
             Statement::Expression(Expression::Assignment { target, value })
-                if matches!(target.as_ref(), Expression::Variable(name) if name == "eax")
+                if matches!(target.as_ref(), Expression::Variable(name) if name == "rax")
                     && matches!(value.as_ref(), Expression::IntegerLiteral(2))
         ));
     }
@@ -264,7 +270,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "rax"
         ));
         let Statement::If {
             condition,
@@ -283,7 +289,7 @@ mod structure_tests {
             [
                 Statement::Expression(Expression::Assignment { target, value }),
                 Statement::Return(None)
-            ] if matches!(target.as_ref(), Expression::Variable(name) if name == "eax")
+            ] if matches!(target.as_ref(), Expression::Variable(name) if name == "rax")
                 && matches!(value.as_ref(), Expression::IntegerLiteral(0))
         ));
         assert!(matches!(
@@ -291,7 +297,7 @@ mod structure_tests {
             Some([
                 Statement::Expression(Expression::Assignment { target, value }),
                 Statement::Return(None)
-            ]) if matches!(target.as_ref(), Expression::Variable(name) if name == "eax")
+            ]) if matches!(target.as_ref(), Expression::Variable(name) if name == "rax")
                 && matches!(value.as_ref(), Expression::IntegerLiteral(1))
         ));
     }
@@ -325,7 +331,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "rax"
         ));
         assert!(matches!(
             func.body[1],
@@ -374,7 +380,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "rax"
         ));
         assert!(matches!(
             func.body[1],
@@ -394,13 +400,13 @@ mod structure_tests {
         assert!(matches!(
             then_block.as_slice(),
             [Statement::Expression(Expression::Assignment { target, value })]
-                if matches!(target.as_ref(), Expression::Variable(name) if name == "eax")
+                if matches!(target.as_ref(), Expression::Variable(name) if name == "rax")
                     && matches!(value.as_ref(), Expression::IntegerLiteral(0))
         ));
         assert!(matches!(
             else_block.as_deref(),
             Some([Statement::Expression(Expression::Assignment { target, value })])
-                if matches!(target.as_ref(), Expression::Variable(name) if name == "eax")
+                if matches!(target.as_ref(), Expression::Variable(name) if name == "rax")
                     && matches!(value.as_ref(), Expression::IntegerLiteral(1))
         ));
         assert!(matches!(
@@ -441,7 +447,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "rax"
         ));
         let Statement::If { condition, .. } = &func.body[2] else {
             panic!("expected if/else, got {:?}", func.body);
@@ -481,7 +487,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "rax"
         ));
 
         let Statement::If { condition, .. } = &func.body[2] else {
@@ -496,7 +502,7 @@ mod structure_tests {
                 op: BinaryOperator::Equal,
                 left,
                 right,
-            } if matches!(left.as_ref(), Expression::Variable(name) if name == "eax")
+            } if matches!(left.as_ref(), Expression::Variable(name) if name == "rax")
                 && matches!(right.as_ref(), Expression::IntegerLiteral(0))
         ));
     }
@@ -529,7 +535,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "r8"
         ));
         assert!(matches!(
             &func.body[1],
@@ -537,7 +543,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "r8b"
+            } if name == "rax"
         ));
 
         let Statement::If { condition, .. } = &func.body[3] else {
@@ -552,7 +558,7 @@ mod structure_tests {
                 op: BinaryOperator::NotEqual,
                 left,
                 right,
-            } if matches!(left.as_ref(), Expression::Variable(name) if name == "r8b")
+            } if matches!(left.as_ref(), Expression::Variable(name) if name == "r8")
                 && matches!(right.as_ref(), Expression::IntegerLiteral(0))
         ));
     }
@@ -585,7 +591,7 @@ mod structure_tests {
                 name,
                 type_info: TypeInfo::U64,
                 init: None,
-            } if name == "eax"
+            } if name == "rax"
         ));
         let Statement::If { condition, .. } = &func.body[2] else {
             panic!("expected if/else, got {:?}", func.body);

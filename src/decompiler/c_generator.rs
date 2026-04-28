@@ -2,6 +2,7 @@
 
 use crate::analysis::TypeInfo;
 use crate::decompiler::ast::{BinaryOperator, Expression, Function, Statement, UnaryOperator};
+use crate::decompiler::c_syntax::{quote_c_string, sanitize_c_comment, sanitize_c_identifier};
 
 /// C generator configuration
 #[derive(Debug, Clone)]
@@ -63,12 +64,14 @@ impl CGenerator {
     /// Generate function signature
     fn generate_function_signature(&self, func: &Function) -> String {
         let return_type = self.type_to_c_string(&func.return_type);
+        let function_name = sanitize_c_identifier(&func.name, "sub");
         let params: Vec<String> = func
             .parameters
             .iter()
             .map(|p| {
                 let param_type = self.type_to_c_string(&p.type_info);
-                format!("{} {}", param_type, p.name)
+                let param_name = sanitize_c_identifier(&p.name, "arg");
+                format!("{} {}", param_type, param_name)
             })
             .collect();
 
@@ -78,7 +81,7 @@ impl CGenerator {
             params.join(", ")
         };
 
-        format!("{} {}({})", return_type, func.name, params_str)
+        format!("{} {}({})", return_type, function_name, params_str)
     }
 
     /// Generate C code from a statement
@@ -189,6 +192,7 @@ impl CGenerator {
                 init,
             } => {
                 let type_str = self.type_to_c_string(type_info);
+                let name = sanitize_c_identifier(name, "var");
                 match init {
                     Some(expr) => format!(
                         "{}{} {} = {};",
@@ -226,7 +230,12 @@ impl CGenerator {
                 // Emit as a C comment so output stays compilable. The address
                 // prefix anchors each line back to the original binary for
                 // diagnostics and for later structuring passes.
-                format!("{}/* 0x{:X}: {} */", indent, address, disasm)
+                format!(
+                    "{}/* 0x{:X}: {} */",
+                    indent,
+                    address,
+                    sanitize_c_comment(disasm)
+                )
             }
         }
     }
@@ -235,8 +244,8 @@ impl CGenerator {
     fn generate_expression(&self, expr: &Expression) -> String {
         match expr {
             Expression::IntegerLiteral(value) => value.to_string(),
-            Expression::StringLiteral(s) => format!("\"{}\"", s),
-            Expression::Variable(name) => name.clone(),
+            Expression::StringLiteral(s) => quote_c_string(s),
+            Expression::Variable(name) => sanitize_c_identifier(name, "var"),
             Expression::BinaryOperation { op, left, right } => {
                 let left_str = self.generate_expression(left);
                 let right_str = self.generate_expression(right);
@@ -256,7 +265,11 @@ impl CGenerator {
                     .iter()
                     .map(|a| self.generate_expression(a))
                     .collect();
-                format!("{}({})", function, args.join(", "))
+                format!(
+                    "{}({})",
+                    sanitize_c_identifier(function, "func"),
+                    args.join(", ")
+                )
             }
             Expression::Assignment { target, value } => {
                 let target_str = self.generate_expression(target);
@@ -283,6 +296,7 @@ impl CGenerator {
             }
             Expression::MemberAccess { object, member } => {
                 let object_str = self.generate_expression(object);
+                let member = sanitize_c_identifier(member, "field");
                 format!("{}.{}", object_str, member)
             }
             Expression::Unknown(s) => s.clone(),

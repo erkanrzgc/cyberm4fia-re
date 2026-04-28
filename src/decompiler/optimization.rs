@@ -203,26 +203,16 @@ impl Optimizer {
                 continue;
             }
 
-            match stmt {
-                Statement::If {
-                    then_block,
-                    else_block: _,
-                    ..
-                } => {
-                    // Mark then block as reachable
-                    if let Some(first) = then_block.first() {
-                        if let Statement::Expression(expr) = first {
-                            if let Expression::Variable(name) = expr {
-                                if let Some(j) = func.body.iter().position(|s| {
-                                    matches!(s, Statement::VariableDeclaration { name: n, .. } if n == name)
-                                }) {
-                                    reachable[j] = true;
-                                }
-                            }
-                        }
+            if let Statement::If { then_block, .. } = stmt {
+                // Mark then block as reachable
+                if let Some(Statement::Expression(Expression::Variable(name))) = then_block.first()
+                {
+                    if let Some(j) = func.body.iter().position(|s| {
+                        matches!(s, Statement::VariableDeclaration { name: n, .. } if n == name)
+                    }) {
+                        reachable[j] = true;
                     }
                 }
-                _ => {}
             }
         }
 

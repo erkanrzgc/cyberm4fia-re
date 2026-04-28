@@ -22,13 +22,14 @@
   <img src="https://img.shields.io/badge/rust-1.75+-blue?style=flat-square&logo=rust" alt="rust">
   <img src="https://img.shields.io/badge/crates-12+-purple?style=flat-square" alt="crates">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/tests-60%20passing-orange?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/badge/tests-82%20passing-orange?style=flat-square" alt="tests">
   <img src="https://img.shields.io/github/last-commit/erkanrzgc/cyberm4fia-re?style=flat-square" alt="last commit">
 </p>
 
 <p align="center">
   <b>cyberm4fia-re</b> is a Rust-powered binary decompiler for ELF, PE, and Mach-O executables —
-  disassembles x86 & ARM, builds control-flow graphs, detects functions, recovers simple stack variables, and generates readable C code.
+  disassembles x86 & ARM, builds control-flow graphs, detects functions, recovers simple stack variables,
+  annotates string references, and generates syntax-safe readable C code.
 </p>
 
 ---
@@ -60,6 +61,8 @@
 | **Structure Recovery** | CFG-aware `if/else` with diamond-shape detection |
 | **Condition Recovery** | `cmp/test + jcc` → human-readable expressions |
 | **Stack Recovery** | x86 `[rbp±off]` / `[rsp±off]` operands → `local_*`, `arg_*`, `stack_*` variables |
+| **String References** | Remaining asm comments annotate matched addresses as `str_XXXX` symbols |
+| **C Syntax Hardening** | Escapes strings/comments and sanitizes emitted identifiers |
 | **Optimization** | Constant folding, dead-code elimination |
 | **C Generation** | Address-annotated C output |
 
@@ -151,9 +154,10 @@ cargo test --lib
 | `binary::parser` | 5 |
 | `analysis::functions` | 7 |
 | `analysis::strings` | 7 |
-| `decompiler::lifter` | 4 |
-| `decompiler::structure` | 10 |
-| `decompiler::other` | 6 |
+| `decompiler::c_syntax` | 12 |
+| `decompiler::lifter` | 8 |
+| `decompiler::string_refs` | 6 |
+| `decompiler::structure` | 16 |
 
 ---
 
@@ -164,7 +168,7 @@ src/
 ├── binary/         # ELF · PE · Mach-O parsing  (goblin)
 ├── disasm/         # x86 (iced-x86) · ARM (capstone) · CFG
 ├── analysis/       # function detection · string extraction · types
-├── decompiler/     # AST · lifter · structure · optimizer · C gen
+├── decompiler/     # AST · lifter · structure · string refs · C syntax helpers · optimizer · C gen
 └── utils/          # error types
 ```
 

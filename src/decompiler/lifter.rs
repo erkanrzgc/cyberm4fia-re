@@ -10,7 +10,9 @@
 
 use crate::analysis::{FunctionInfo, TypeInfo};
 use crate::decompiler::ast::{Function, Statement};
+use crate::decompiler::c_syntax::{sanitize_c_identifier, unique_c_identifier};
 use crate::disasm::control_flow::Instruction;
+use std::collections::BTreeSet;
 
 /// Lift a single detected function into an AST function.
 ///
@@ -19,6 +21,25 @@ use crate::disasm::control_flow::Instruction;
 /// reconstructed by later analysis passes once calling-convention recovery
 /// lands.
 pub fn lift_function(info: &FunctionInfo) -> Function {
+    let fallback = format!("sub_{:X}", info.address);
+    lift_function_with_name(info, sanitize_c_identifier(&info.name, &fallback))
+}
+
+/// Lift a slice of detected functions.
+pub fn lift_functions(infos: &[FunctionInfo]) -> Vec<Function> {
+    let mut used_names = BTreeSet::new();
+
+    infos
+        .iter()
+        .map(|info| {
+            let fallback = format!("sub_{:X}", info.address);
+            let unique_name = unique_c_identifier(&info.name, &fallback, &mut used_names);
+            lift_function_with_name(info, unique_name)
+        })
+        .collect()
+}
+
+fn lift_function_with_name(info: &FunctionInfo, name: String) -> Function {
     let body: Vec<Statement> = info
         .instructions
         .iter()
@@ -26,17 +47,12 @@ pub fn lift_function(info: &FunctionInfo) -> Function {
         .collect();
 
     Function {
-        name: info.name.clone(),
+        name,
         return_type: TypeInfo::Void,
         parameters: Vec::new(),
         body,
         is_variadic: false,
     }
-}
-
-/// Lift a slice of detected functions.
-pub fn lift_functions(infos: &[FunctionInfo]) -> Vec<Function> {
-    infos.iter().map(lift_function).collect()
 }
 
 fn instruction_to_statement(instr: &Instruction) -> Statement {
@@ -115,6 +131,95 @@ mod tests {
             }
             other => panic!("expected InlineAsm, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn lift_function_sanitizes_invalid_c_identifier_names() {
+        let info = FunctionInfo {
+            name: "kernel32.dll!CreateFileW".to_string(),
+            address: 0x4000,
+            size: 0,
+            instructions: vec![],
+            is_import: false,
+            is_export: true,
+        };
+
+        let func = lift_function(&info);
+        assert_eq!(func.name, "kernel32_dll_CreateFileW");
+    }
+
+    #[test]
+    fn lift_function_uses_address_fallback_for_empty_sanitized_name() {
+        let info = FunctionInfo {
+            name: "!!!".to_string(),
+            address: 0x4010,
+            size: 0,
+            instructions: vec![],
+            is_import: false,
+            is_export: false,
+        };
+
+        let func = lift_function(&info);
+        assert_eq!(func.name, "sub_4010");
+    }
+
+    #[test]
+    fn lift_function_avoids_keywords_and_leading_digits() {
+        let keyword = FunctionInfo {
+            name: "return".to_string(),
+            address: 0x5000,
+            size: 0,
+            instructions: vec![],
+            is_import: false,
+            is_export: false,
+        };
+        let leading_digit = FunctionInfo {
+            name: "123abc".to_string(),
+            address: 0x5001,
+            size: 0,
+            instructions: vec![],
+            is_import: false,
+            is_export: false,
+        };
+
+        assert_eq!(lift_function(&keyword).name, "return_");
+        assert_eq!(lift_function(&leading_digit).name, "sub_5001_123abc");
+    }
+
+    #[test]
+    fn lift_functions_uniquifies_sanitized_name_collisions() {
+        let infos = vec![
+            FunctionInfo {
+                name: "foo-bar".to_string(),
+                address: 0x6000,
+                size: 0,
+                instructions: vec![],
+                is_import: false,
+                is_export: false,
+            },
+            FunctionInfo {
+                name: "foo_bar".to_string(),
+                address: 0x6001,
+                size: 0,
+                instructions: vec![],
+                is_import: false,
+                is_export: false,
+            },
+            FunctionInfo {
+                name: "foo bar".to_string(),
+                address: 0x6002,
+                size: 0,
+                instructions: vec![],
+                is_import: false,
+                is_export: false,
+            },
+        ];
+
+        let funcs = lift_functions(&infos);
+        assert_eq!(
+            funcs.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            vec!["foo_bar", "foo_bar_2", "foo_bar_3"]
+        );
     }
 
     #[test]

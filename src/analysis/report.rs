@@ -3,7 +3,7 @@
 use crate::analysis::functions::FunctionInfo;
 use crate::analysis::runtime::RuntimeMatch;
 use crate::analysis::strings::StringInfo;
-use crate::binary::parser::{ExportInfo, ImportInfo, SectionInfo};
+use crate::binary::parser::{ExportInfo, ImportAddressInfo, ImportInfo, SectionInfo};
 use crate::disasm::control_flow::Instruction;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -20,6 +20,7 @@ pub struct AnalysisReportInputs<'a> {
     pub functions: &'a [FunctionInfo],
     pub strings: &'a [StringInfo],
     pub imports: &'a [ImportInfo],
+    pub import_addresses: &'a [ImportAddressInfo],
     pub exports: &'a [ExportInfo],
     pub runtime_matches: &'a [RuntimeMatch],
 }
@@ -38,6 +39,7 @@ pub struct AnalysisReportPackage {
     pub strings_by_function: Vec<FunctionStringIndex>,
     pub api_insights: Vec<ApiInsightReport>,
     pub behavior_report: BehaviorReport,
+    pub import_addresses: Vec<ImportAddressReport>,
     pub imports: Vec<ImportReport>,
     pub exports: Vec<ExportReport>,
 }
@@ -122,6 +124,9 @@ pub struct CallReference {
     pub instruction_address: u64,
     pub target_address: u64,
     pub target_name: Option<String>,
+    pub target_kind: String,
+    pub target_library: Option<String>,
+    pub target_symbol: Option<String>,
 }
 
 /// String reference found inside a function.
@@ -190,8 +195,18 @@ pub struct CallerReference {
 pub struct ImportXrefReport {
     pub library: String,
     pub function: String,
+    pub address: Option<u64>,
     pub category: Option<String>,
     pub severity: Option<String>,
+    pub referenced_by: Vec<ImportCallerReference>,
+}
+
+/// Caller site for an imported API.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportCallerReference {
+    pub function_name: String,
+    pub function_address: u64,
+    pub instruction_address: u64,
 }
 
 /// High-signal imported API classification.
@@ -231,6 +246,15 @@ pub struct BehaviorFinding {
     pub detail: String,
 }
 
+/// Import address table report.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportAddressReport {
+    pub library: String,
+    pub function: String,
+    pub address: u64,
+    pub ordinal: Option<u16>,
+}
+
 /// Import table report.
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportReport {
@@ -262,11 +286,14 @@ impl AnalysisReportBuilder {
             .iter()
             .map(|string| (string.address, string))
             .collect::<HashMap<_, _>>();
+        let import_address_map = build_import_address_map(inputs.import_addresses);
 
         let functions = inputs
             .functions
             .iter()
-            .map(|function| function_report(function, &function_names, &string_map))
+            .map(|function| {
+                function_report(function, &function_names, &string_map, &import_address_map)
+            })
             .collect::<Vec<_>>();
         let cfg_summary = cfg_summary(inputs.basic_block_count, inputs.functions);
         let call_graph = call_graph_edges(&functions);
@@ -277,7 +304,12 @@ impl AnalysisReportBuilder {
             .filter_map(suspicious_string_report)
             .collect::<Vec<_>>();
         let api_insights = api_insights(inputs.imports);
-        let xrefs = xref_report(&functions, inputs.imports, &api_insights);
+        let xrefs = xref_report(
+            &functions,
+            inputs.imports,
+            inputs.import_addresses,
+            &api_insights,
+        );
         let behavior_report =
             behavior_report(&api_insights, &suspicious_strings, inputs.runtime_matches);
 
@@ -314,6 +346,11 @@ impl AnalysisReportBuilder {
             strings_by_function,
             api_insights,
             behavior_report,
+            import_addresses: inputs
+                .import_addresses
+                .iter()
+                .map(import_address_report)
+                .collect(),
             imports: inputs
                 .imports
                 .iter()
@@ -378,9 +415,17 @@ fn strings_by_function(functions: &[FunctionReport]) -> Vec<FunctionStringIndex>
         .collect()
 }
 
+fn build_import_address_map(imports: &[ImportAddressInfo]) -> HashMap<u64, &ImportAddressInfo> {
+    imports
+        .iter()
+        .map(|import| (import.address, import))
+        .collect()
+}
+
 fn xref_report(
     functions: &[FunctionReport],
     imports: &[ImportInfo],
+    import_addresses: &[ImportAddressInfo],
     api_insights: &[ApiInsightReport],
 ) -> XrefReport {
     let mut called_by: HashMap<u64, Vec<CallerReference>> = HashMap::new();
@@ -417,12 +462,14 @@ fn xref_report(
 
     XrefReport {
         functions: function_xrefs,
-        imports: import_xrefs(imports, api_insights),
+        imports: import_xrefs(functions, imports, import_addresses, api_insights),
     }
 }
 
 fn import_xrefs(
+    functions: &[FunctionReport],
     imports: &[ImportInfo],
+    import_addresses: &[ImportAddressInfo],
     api_insights: &[ApiInsightReport],
 ) -> Vec<ImportXrefReport> {
     let insight_map = api_insights
@@ -437,19 +484,36 @@ fn import_xrefs(
             )
         })
         .collect::<HashMap<_, _>>();
+    let address_map = import_addresses
+        .iter()
+        .map(|import| {
+            (
+                (
+                    import.library.to_ascii_lowercase(),
+                    import.function.to_ascii_lowercase(),
+                ),
+                import.address,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let callers = import_callers(functions);
 
     let mut xrefs = Vec::new();
     for import in imports {
         for function in &import.functions {
-            let insight = insight_map.get(&(
+            let key = (
                 import.name.to_ascii_lowercase(),
                 function.to_ascii_lowercase(),
-            ));
+            );
+            let insight = insight_map.get(&key);
+            let address = address_map.get(&key).copied();
             xrefs.push(ImportXrefReport {
                 library: import.name.clone(),
                 function: function.clone(),
+                address,
                 category: insight.map(|insight| insight.category.clone()),
                 severity: insight.map(|insight| insight.severity.clone()),
+                referenced_by: callers.get(&key).cloned().unwrap_or_default(),
             });
         }
     }
@@ -464,6 +528,34 @@ fn import_xrefs(
             ))
     });
     xrefs
+}
+
+fn import_callers(
+    functions: &[FunctionReport],
+) -> HashMap<(String, String), Vec<ImportCallerReference>> {
+    let mut callers: HashMap<(String, String), Vec<ImportCallerReference>> = HashMap::new();
+
+    for function in functions {
+        for call in &function.calls {
+            let (Some(library), Some(symbol)) = (&call.target_library, &call.target_symbol) else {
+                continue;
+            };
+            callers
+                .entry((library.to_ascii_lowercase(), symbol.to_ascii_lowercase()))
+                .or_default()
+                .push(ImportCallerReference {
+                    function_name: function.name.clone(),
+                    function_address: function.address,
+                    instruction_address: call.instruction_address,
+                });
+        }
+    }
+
+    for caller_list in callers.values_mut() {
+        caller_list.sort_by_key(|caller| (caller.function_address, caller.instruction_address));
+    }
+
+    callers
 }
 
 fn api_insights(imports: &[ImportInfo]) -> Vec<ApiInsightReport> {
@@ -659,6 +751,7 @@ fn function_report(
     function: &FunctionInfo,
     function_names: &HashMap<u64, String>,
     strings: &HashMap<u64, &StringInfo>,
+    import_addresses: &HashMap<u64, &ImportAddressInfo>,
 ) -> FunctionReport {
     FunctionReport {
         name: function.name.clone(),
@@ -668,7 +761,7 @@ fn function_report(
         basic_block_estimate: basic_block_estimate(function),
         is_import: function.is_import,
         is_export: function.is_export,
-        calls: call_references(function, function_names),
+        calls: call_references(function, function_names, import_addresses),
         string_refs: string_references(function, strings),
     }
 }
@@ -724,16 +817,34 @@ fn basic_block_estimate(function: &FunctionInfo) -> usize {
 fn call_references(
     function: &FunctionInfo,
     function_names: &HashMap<u64, String>,
+    import_addresses: &HashMap<u64, &ImportAddressInfo>,
 ) -> Vec<CallReference> {
     function
         .instructions
         .iter()
         .filter_map(|instruction| {
-            let target = call_target(instruction)?;
+            let Some(target) = call_target(instruction).or_else(|| import_call_target(instruction))
+            else {
+                return None;
+            };
+            if let Some(import) = import_addresses.get(&target) {
+                return Some(CallReference {
+                    instruction_address: instruction.address(),
+                    target_address: target,
+                    target_name: Some(format!("{}!{}", import.library, import.function)),
+                    target_kind: "import".to_string(),
+                    target_library: Some(import.library.clone()),
+                    target_symbol: Some(import.function.clone()),
+                });
+            }
+
             Some(CallReference {
                 instruction_address: instruction.address(),
                 target_address: target,
                 target_name: function_names.get(&target).cloned(),
+                target_kind: "function".to_string(),
+                target_library: None,
+                target_symbol: None,
             })
         })
         .collect()
@@ -771,6 +882,34 @@ fn call_target(instruction: &Instruction) -> Option<u64> {
         Instruction::X86(instruction) if instruction.is_call() => instruction.near_branch_target,
         Instruction::Arm(_) if instruction.is_call() => None,
         _ => None,
+    }
+}
+
+fn import_call_target(instruction: &Instruction) -> Option<u64> {
+    match instruction {
+        Instruction::X86(instruction) if instruction.is_call() => referenced_memory_address(
+            instruction.address,
+            instruction.length,
+            &instruction.operands,
+        ),
+        _ => None,
+    }
+}
+
+fn referenced_memory_address(address: u64, length: usize, operands: &str) -> Option<u64> {
+    if !operands.contains('[') || !operands.contains(']') {
+        return None;
+    }
+
+    let lower = operands.to_ascii_lowercase();
+    let first_hex = collect_hex_addresses(operands).into_iter().next()?;
+
+    if lower.contains("rip+") || lower.contains("rip +") {
+        Some(address.wrapping_add(length as u64).wrapping_add(first_hex))
+    } else if lower.contains("rip-") || lower.contains("rip -") {
+        Some(address.wrapping_add(length as u64).wrapping_sub(first_hex))
+    } else {
+        Some(first_hex)
     }
 }
 
@@ -853,6 +992,15 @@ fn suspicious_string_report(string: &StringInfo) -> Option<SuspiciousStringRepor
         value: string.value.clone(),
         category: category.to_string(),
     })
+}
+
+fn import_address_report(import: &ImportAddressInfo) -> ImportAddressReport {
+    ImportAddressReport {
+        library: import.library.clone(),
+        function: import.function.clone(),
+        address: import.address,
+        ordinal: import.ordinal,
+    }
 }
 
 fn suspicious_string_category(value: &str) -> Option<&'static str> {
@@ -1065,17 +1213,29 @@ mod tests {
     use super::*;
     use crate::analysis::functions::FunctionInfo;
     use crate::analysis::strings::{StringEncoding, StringInfo};
-    use crate::binary::parser::{ExportInfo, ImportInfo, SectionCharacteristics, SectionInfo};
+    use crate::binary::parser::{
+        ExportInfo, ImportAddressInfo, ImportInfo, SectionCharacteristics, SectionInfo,
+    };
     use crate::disasm::control_flow::Instruction;
     use crate::disasm::X86Instruction;
 
     fn x86(address: u64, mnemonic: &str, operands: &str, target: Option<u64>) -> Instruction {
+        x86_with_len(address, mnemonic, operands, 1, target)
+    }
+
+    fn x86_with_len(
+        address: u64,
+        mnemonic: &str,
+        operands: &str,
+        length: usize,
+        target: Option<u64>,
+    ) -> Instruction {
         Instruction::X86(X86Instruction {
             address,
-            bytes: vec![0x90],
+            bytes: vec![0x90; length],
             mnemonic: mnemonic.to_string(),
             operands: operands.to_string(),
-            length: 1,
+            length,
             near_branch_target: target,
         })
     }
@@ -1097,6 +1257,15 @@ mod tests {
             value: value.to_string(),
             encoding: StringEncoding::Ascii,
             length: value.len(),
+        }
+    }
+
+    fn import_address(library: &str, function: &str, address: u64) -> ImportAddressInfo {
+        ImportAddressInfo {
+            library: library.to_string(),
+            function: function.to_string(),
+            address,
+            ordinal: None,
         }
     }
 
@@ -1122,6 +1291,7 @@ mod tests {
             functions: &functions,
             strings: &[],
             imports: &[],
+            import_addresses: &[],
             exports: &[],
             runtime_matches: &[],
         });
@@ -1135,6 +1305,138 @@ mod tests {
         assert_eq!(caller.calls.len(), 1);
         assert_eq!(caller.calls[0].target_address, 0x2000);
         assert_eq!(caller.calls[0].target_name.as_deref(), Some("sub_2000"));
+    }
+
+    #[test]
+    fn package_resolves_indirect_iat_calls_to_import_names() {
+        let functions = vec![function(
+            "sub_1000",
+            0x1000,
+            vec![x86(0x1000, "call", "qword ptr [3000h]", None)],
+        )];
+        let imports = vec![ImportInfo {
+            name: "kernel32.dll".to_string(),
+            functions: vec!["CreateFileW".to_string()],
+        }];
+        let import_addresses = vec![import_address("kernel32.dll", "CreateFileW", 0x3000)];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 1,
+            basic_block_count: 1,
+            sections: &[],
+            functions: &functions,
+            strings: &[],
+            imports: &imports,
+            import_addresses: &import_addresses,
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        let call = &package.functions[0].calls[0];
+        assert_eq!(call.target_address, 0x3000);
+        assert_eq!(
+            call.target_name.as_deref(),
+            Some("kernel32.dll!CreateFileW")
+        );
+        assert_eq!(call.target_kind, "import");
+        assert_eq!(call.target_library.as_deref(), Some("kernel32.dll"));
+        assert_eq!(call.target_symbol.as_deref(), Some("CreateFileW"));
+        assert_eq!(package.import_addresses[0].address, 0x3000);
+    }
+
+    #[test]
+    fn package_tracks_import_xref_call_sites() {
+        let functions = vec![
+            function(
+                "sub_1000",
+                0x1000,
+                vec![x86(0x1000, "call", "qword ptr [3000h]", None)],
+            ),
+            function(
+                "sub_2000",
+                0x2000,
+                vec![x86(0x2000, "call", "qword ptr [3000h]", None)],
+            ),
+        ];
+        let imports = vec![ImportInfo {
+            name: "kernel32.dll".to_string(),
+            functions: vec!["CreateFileW".to_string()],
+        }];
+        let import_addresses = vec![import_address("kernel32.dll", "CreateFileW", 0x3000)];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 2,
+            basic_block_count: 2,
+            sections: &[],
+            functions: &functions,
+            strings: &[],
+            imports: &imports,
+            import_addresses: &import_addresses,
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        let import_xref = package
+            .xrefs
+            .imports
+            .iter()
+            .find(|xref| xref.function == "CreateFileW")
+            .expect("import xref exists");
+
+        assert_eq!(import_xref.address, Some(0x3000));
+        assert_eq!(import_xref.referenced_by.len(), 2);
+        assert_eq!(import_xref.referenced_by[0].function_name, "sub_1000");
+        assert_eq!(import_xref.referenced_by[1].function_name, "sub_2000");
+    }
+
+    #[test]
+    fn package_resolves_rip_relative_iat_calls_to_import_names() {
+        let functions = vec![function(
+            "sub_1000",
+            0x1000,
+            vec![x86_with_len(
+                0x1000,
+                "call",
+                "qword ptr [rip+1FFAh]",
+                6,
+                None,
+            )],
+        )];
+        let imports = vec![ImportInfo {
+            name: "kernel32.dll".to_string(),
+            functions: vec!["GetProcAddress".to_string()],
+        }];
+        let import_addresses = vec![import_address("kernel32.dll", "GetProcAddress", 0x3000)];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 1,
+            basic_block_count: 1,
+            sections: &[],
+            functions: &functions,
+            strings: &[],
+            imports: &imports,
+            import_addresses: &import_addresses,
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        assert_eq!(
+            package.functions[0].calls[0].target_name.as_deref(),
+            Some("kernel32.dll!GetProcAddress")
+        );
+        assert_eq!(package.functions[0].calls[0].target_address, 0x3000);
     }
 
     #[test]
@@ -1157,6 +1459,7 @@ mod tests {
             functions: &functions,
             strings: &strings,
             imports: &[],
+            import_addresses: &[],
             exports: &[],
             runtime_matches: &[],
         });
@@ -1197,6 +1500,7 @@ mod tests {
             functions: &functions,
             strings: &strings,
             imports: &imports,
+            import_addresses: &[],
             exports: &exports,
             runtime_matches: &[],
         });
@@ -1270,6 +1574,7 @@ mod tests {
             functions: &functions,
             strings: &strings,
             imports: &[],
+            import_addresses: &[],
             exports: &[],
             runtime_matches: &[],
         });
@@ -1310,6 +1615,7 @@ mod tests {
             functions: &functions,
             strings: &[],
             imports: &[],
+            import_addresses: &[],
             exports: &[],
             runtime_matches: &[],
         });
@@ -1347,6 +1653,7 @@ mod tests {
             functions: &functions,
             strings: &strings,
             imports: &[],
+            import_addresses: &[],
             exports: &[],
             runtime_matches: &[],
         });
@@ -1388,6 +1695,7 @@ mod tests {
             functions: &functions,
             strings: &strings,
             imports: &[],
+            import_addresses: &[],
             exports: &[],
             runtime_matches: &[],
         });
@@ -1446,6 +1754,7 @@ mod tests {
             functions: &[],
             strings: &strings,
             imports: &imports,
+            import_addresses: &[],
             exports: &[],
             runtime_matches: &[],
         });
@@ -1494,6 +1803,7 @@ mod tests {
             functions: &[],
             strings: &[],
             imports: &imports,
+            import_addresses: &[],
             exports: &[],
             runtime_matches: &[],
         });

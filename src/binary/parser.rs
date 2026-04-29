@@ -83,6 +83,11 @@ pub trait BinaryInfo {
     /// Get imports
     fn imports(&self) -> Vec<ImportInfo>;
 
+    /// Get import address table entries when the format exposes them.
+    fn import_addresses(&self) -> Vec<ImportAddressInfo> {
+        Vec::new()
+    }
+
     /// Get exports
     fn exports(&self) -> Vec<ExportInfo>;
 }
@@ -112,6 +117,15 @@ pub struct SectionCharacteristics {
 pub struct ImportInfo {
     pub name: String,
     pub functions: Vec<String>,
+}
+
+/// Import address table/thunk entry.
+#[derive(Debug, Clone)]
+pub struct ImportAddressInfo {
+    pub library: String,
+    pub function: String,
+    pub address: u64,
+    pub ordinal: Option<u16>,
 }
 
 /// Export information

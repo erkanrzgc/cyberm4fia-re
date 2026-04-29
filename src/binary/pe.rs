@@ -1,7 +1,7 @@
 //! PE/EXE format parser
 
 use crate::binary::parser::{
-    BinaryInfo, ExportInfo, ImportInfo, SectionCharacteristics, SectionInfo,
+    BinaryInfo, ExportInfo, ImportAddressInfo, ImportInfo, SectionCharacteristics, SectionInfo,
 };
 use crate::binary::{BinaryFormat, BinaryParser};
 use crate::utils::error::{Error, Result};
@@ -30,6 +30,7 @@ pub struct PeBinary {
     entry_point: u64,
     sections: Vec<SectionInfo>,
     imports: Vec<ImportInfo>,
+    import_addresses: Vec<ImportAddressInfo>,
     exports: Vec<ExportInfo>,
 }
 
@@ -94,11 +95,22 @@ impl PeBinary {
         // We group by DLL name for our ImportInfo shape.
         let mut dll_map: std::collections::BTreeMap<String, Vec<String>> =
             std::collections::BTreeMap::new();
+        let mut import_addresses = Vec::new();
         for import in &pe.imports {
             dll_map
                 .entry(import.dll.to_string())
                 .or_default()
                 .push(import.name.to_string());
+            import_addresses.push(ImportAddressInfo {
+                library: import.dll.to_string(),
+                function: import.name.to_string(),
+                address: import.offset as u64,
+                ordinal: if import.name.starts_with("ORDINAL ") {
+                    Some(import.ordinal)
+                } else {
+                    None
+                },
+            });
         }
         let imports = dll_map
             .into_iter()
@@ -123,6 +135,7 @@ impl PeBinary {
             entry_point,
             sections,
             imports,
+            import_addresses,
             exports,
         }
     }
@@ -147,6 +160,10 @@ impl BinaryInfo for PeBinary {
 
     fn imports(&self) -> Vec<ImportInfo> {
         self.imports.clone()
+    }
+
+    fn import_addresses(&self) -> Vec<ImportAddressInfo> {
+        self.import_addresses.clone()
     }
 
     fn exports(&self) -> Vec<ExportInfo> {

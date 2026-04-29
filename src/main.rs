@@ -138,6 +138,7 @@ fn main() -> anyhow::Result<()> {
     let function_detector = FunctionDetector::new();
     let exports = binary.exports();
     let imports = binary.imports();
+    let import_addresses = binary.import_addresses();
     let functions = function_detector.detect(FunctionDetectionInputs {
         instructions: &all_instructions,
         entry_point: binary.entry_point(),
@@ -227,6 +228,7 @@ fn main() -> anyhow::Result<()> {
             functions: &functions,
             strings: &all_strings,
             imports: &imports,
+            import_addresses: &import_addresses,
             exports: &exports,
             runtime_matches: &runtime_matches,
         })
@@ -420,6 +422,7 @@ fn write_analysis_report_package(
     write_json_file(report_dir, "functions.json", &package.functions)?;
     write_json_file(report_dir, "call_graph.json", &package.call_graph)?;
     write_json_file(report_dir, "xrefs.json", &package.xrefs)?;
+    write_json_file(report_dir, "import_xrefs.json", &package.xrefs.imports)?;
     write_json_file(report_dir, "sections.json", &package.sections)?;
     write_json_file(report_dir, "cfg_summary.json", &package.cfg_summary)?;
     write_json_file(report_dir, "strings.json", &package.strings)?;
@@ -435,6 +438,11 @@ fn write_analysis_report_package(
     )?;
     write_json_file(report_dir, "api_insights.json", &package.api_insights)?;
     write_json_file(report_dir, "behavior_report.json", &package.behavior_report)?;
+    write_json_file(
+        report_dir,
+        "import_addresses.json",
+        &package.import_addresses,
+    )?;
     write_json_file(report_dir, "imports.json", &package.imports)?;
     write_json_file(report_dir, "exports.json", &package.exports)?;
 
@@ -493,6 +501,10 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str(&format!("Functions: {}\n", summary.function_count));
     report.push_str(&format!("Strings: {}\n", summary.string_count));
     report.push_str(&format!("Imports: {}\n", summary.import_count));
+    report.push_str(&format!(
+        "Import addresses: {}\n",
+        package.import_addresses.len()
+    ));
     report.push_str(&format!("Exports: {}\n\n", summary.export_count));
 
     if summary.runtime_hints.is_empty() {
@@ -541,6 +553,7 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str("- functions.json\n");
     report.push_str("- call_graph.json\n");
     report.push_str("- xrefs.json\n");
+    report.push_str("- import_xrefs.json\n");
     report.push_str("- sections.json\n");
     report.push_str("- cfg_summary.json\n");
     report.push_str("- strings.json\n");
@@ -549,6 +562,7 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str("- api_insights.json\n");
     report.push_str("- behavior_report.json\n");
     report.push_str("- behavior_report.txt\n");
+    report.push_str("- import_addresses.json\n");
     report.push_str("- imports.json\n");
     report.push_str("- exports.json\n");
     report.push_str("- analysis_package.json\n");

@@ -22,7 +22,7 @@
   <img src="https://img.shields.io/badge/rust-1.75+-blue?style=flat-square&logo=rust" alt="rust">
   <img src="https://img.shields.io/badge/crates-12+-purple?style=flat-square" alt="crates">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/tests-103%20passing-orange?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/badge/tests-106%20passing-orange?style=flat-square" alt="tests">
   <img src="https://img.shields.io/github/last-commit/erkanrzgc/cyberm4fia-re?style=flat-square" alt="last commit">
 </p>
 
@@ -59,8 +59,8 @@
 |---|---|
 | **Runtime Detection** | Python/PyInstaller/Nuitka, Dart/Flutter, .NET, Go, Rust, Electron/Node, JVM hints |
 | **Runtime Reports** | Actionable Python extraction, Dart/Flutter snapshot, CLR/IL, Go/Rust, Electron, JVM guidance |
-| **Runtime Artifact Extraction** | Writes `runtime_report.txt`, `artifacts_manifest.json`, Python `.pyc` candidates, and Dart/Flutter snapshot inventory |
-| **RE Report Package** | Writes `report.txt`, `decompiled.c`, `functions.json`, `strings.json`, `imports.json`, `exports.json`, and `analysis_package.json` |
+| **Runtime Artifact Extraction** | Writes `runtime_report.txt`, `artifacts_manifest.json`, Python `.pyc` candidates, PyInstaller CArchive cookie inventory, and Dart/Flutter snapshot inventory |
+| **RE Report Package** | Writes `report.txt`, `decompiled.c`, `functions.json`, `sections.json`, `cfg_summary.json`, `strings.json`, `suspicious_strings.json`, `imports.json`, `exports.json`, and `analysis_package.json` |
 | **CFG Construction** | Control-flow graph via `petgraph` |
 | **Function Detection** | Entry point, exports, call targets, MSVC prologues |
 | **AST Lifting** | Pseudo-register and stack assignments (`mov`, `xor reg, reg`, `[rbp-8]`, …) |
@@ -70,7 +70,7 @@
 | **String References** | Remaining asm comments annotate matched addresses as `str_XXXX` symbols |
 | **C Syntax Hardening** | Escapes strings/comments and sanitizes emitted identifiers |
 | **Optimization** | Constant folding, dead-code elimination |
-| **C Generation** | Address-annotated C output |
+| **C Generation** | Address-annotated C output with direct x86/x64 call recovery |
 
 ---
 
@@ -133,9 +133,10 @@ AOT inputs are inventoried as snapshots/markers; exact Dart source recovery is
 not claimed.
 
 Report package mode writes `report.txt`, `decompiled.c`, `functions.json`,
-`strings.json`, `imports.json`, `exports.json`, and `analysis_package.json`.
-Function reports include direct x86/x64 call targets and exact string references
-when the binary exposes referenced string addresses.
+`sections.json`, `cfg_summary.json`, `strings.json`, `suspicious_strings.json`,
+`imports.json`, `exports.json`, and `analysis_package.json`. Function reports
+include direct x86/x64 call targets, basic-block estimates, and exact string
+references when the binary exposes referenced string addresses.
 
 **Windows smoke test:**
 ```bash
@@ -158,6 +159,7 @@ void sub_11BF(void) {
     if ((r8b == 0)) {
         return;
     }
+    sub_140012340();
     /* 0x11DE: xor rax,rsp */
 }
 ```
@@ -177,13 +179,13 @@ cargo test --lib
 | `disasm::control_flow` | 6 |
 | `binary::parser` | 5 |
 | `analysis::functions` | 7 |
-| `analysis::report` | 3 |
+| `analysis::report` | 4 |
 | `analysis::runtime` | 10 |
-| `analysis::runtime_artifacts` | 4 |
+| `analysis::runtime_artifacts` | 5 |
 | `analysis::runtime_report` | 4 |
 | `analysis::strings` | 7 |
 | `decompiler::c_syntax` | 12 |
-| `decompiler::lifter` | 8 |
+| `decompiler::lifter` | 9 |
 | `decompiler::string_refs` | 6 |
 | `decompiler::structure` | 16 |
 

@@ -223,6 +223,7 @@ fn main() -> anyhow::Result<()> {
             entry_point: binary.entry_point(),
             instruction_count: all_instructions.len(),
             basic_block_count: cfg.blocks().len(),
+            sections: &sections,
             functions: &functions,
             strings: &all_strings,
             imports: &imports,
@@ -417,7 +418,14 @@ fn write_analysis_report_package(
 
     write_json_file(report_dir, "analysis_package.json", package)?;
     write_json_file(report_dir, "functions.json", &package.functions)?;
+    write_json_file(report_dir, "sections.json", &package.sections)?;
+    write_json_file(report_dir, "cfg_summary.json", &package.cfg_summary)?;
     write_json_file(report_dir, "strings.json", &package.strings)?;
+    write_json_file(
+        report_dir,
+        "suspicious_strings.json",
+        &package.suspicious_strings,
+    )?;
     write_json_file(report_dir, "imports.json", &package.imports)?;
     write_json_file(report_dir, "exports.json", &package.exports)?;
 
@@ -452,6 +460,14 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str(&format!("Entry point: 0x{:X}\n", summary.entry_point));
     report.push_str(&format!("Instructions: {}\n", summary.instruction_count));
     report.push_str(&format!("Basic blocks: {}\n", summary.basic_block_count));
+    report.push_str(&format!(
+        "Direct calls: {}\n",
+        package.cfg_summary.direct_call_count
+    ));
+    report.push_str(&format!(
+        "Suspicious strings: {}\n",
+        package.suspicious_strings.len()
+    ));
     report.push_str(&format!("Functions: {}\n", summary.function_count));
     report.push_str(&format!("Strings: {}\n", summary.string_count));
     report.push_str(&format!("Imports: {}\n", summary.import_count));
@@ -488,7 +504,10 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str("\nFiles:\n");
     report.push_str("- decompiled.c\n");
     report.push_str("- functions.json\n");
+    report.push_str("- sections.json\n");
+    report.push_str("- cfg_summary.json\n");
     report.push_str("- strings.json\n");
+    report.push_str("- suspicious_strings.json\n");
     report.push_str("- imports.json\n");
     report.push_str("- exports.json\n");
     report.push_str("- analysis_package.json\n");

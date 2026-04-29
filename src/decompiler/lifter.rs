@@ -9,10 +9,11 @@
 //! raw instruction lists.
 
 use crate::analysis::{FunctionInfo, TypeInfo};
-use crate::decompiler::ast::{Function, Statement};
+use crate::decompiler::ast::{Expression, Function, Statement};
 use crate::decompiler::c_syntax::{sanitize_c_identifier, unique_c_identifier};
 use crate::disasm::control_flow::Instruction;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 
 /// Lift a single detected function into an AST function.
 ///
@@ -22,28 +23,42 @@ use std::collections::BTreeSet;
 /// lands.
 pub fn lift_function(info: &FunctionInfo) -> Function {
     let fallback = format!("sub_{:X}", info.address);
-    lift_function_with_name(info, sanitize_c_identifier(&info.name, &fallback))
+    lift_function_with_name(
+        info,
+        sanitize_c_identifier(&info.name, &fallback),
+        &HashMap::new(),
+    )
 }
 
 /// Lift a slice of detected functions.
 pub fn lift_functions(infos: &[FunctionInfo]) -> Vec<Function> {
     let mut used_names = BTreeSet::new();
+    let mut resolved_names = Vec::with_capacity(infos.len());
+
+    for info in infos {
+        let fallback = format!("sub_{:X}", info.address);
+        let unique_name = unique_c_identifier(&info.name, &fallback, &mut used_names);
+        resolved_names.push((info.address, unique_name));
+    }
+
+    let call_targets: HashMap<u64, String> = resolved_names.iter().cloned().collect();
 
     infos
         .iter()
-        .map(|info| {
-            let fallback = format!("sub_{:X}", info.address);
-            let unique_name = unique_c_identifier(&info.name, &fallback, &mut used_names);
-            lift_function_with_name(info, unique_name)
-        })
+        .zip(resolved_names)
+        .map(|(info, (_, unique_name))| lift_function_with_name(info, unique_name, &call_targets))
         .collect()
 }
 
-fn lift_function_with_name(info: &FunctionInfo, name: String) -> Function {
+fn lift_function_with_name(
+    info: &FunctionInfo,
+    name: String,
+    call_targets: &HashMap<u64, String>,
+) -> Function {
     let body: Vec<Statement> = info
         .instructions
         .iter()
-        .map(instruction_to_statement)
+        .map(|instruction| instruction_to_statement(instruction, call_targets))
         .collect();
 
     Function {
@@ -55,12 +70,32 @@ fn lift_function_with_name(info: &FunctionInfo, name: String) -> Function {
     }
 }
 
-fn instruction_to_statement(instr: &Instruction) -> Statement {
+fn instruction_to_statement(instr: &Instruction, call_targets: &HashMap<u64, String>) -> Statement {
+    if let Some(function) = direct_call_target_name(instr, call_targets) {
+        return Statement::Expression(Expression::FunctionCall {
+            function,
+            arguments: Vec::new(),
+        });
+    }
+
     let (address, disasm) = match instr {
         Instruction::X86(x) => (x.address, x.to_string()),
         Instruction::Arm(a) => (a.address, a.to_string()),
     };
     Statement::InlineAsm { address, disasm }
+}
+
+fn direct_call_target_name(
+    instr: &Instruction,
+    call_targets: &HashMap<u64, String>,
+) -> Option<String> {
+    match instr {
+        Instruction::X86(x) if x.is_call() => {
+            let target = x.near_branch_target?;
+            call_targets.get(&target).cloned()
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +297,42 @@ mod tests {
             funcs.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
             vec!["a", "b"]
         );
+    }
+
+    #[test]
+    fn lift_functions_turns_direct_x86_calls_into_function_call_statements() {
+        let caller = FunctionInfo {
+            name: "sub_1000".to_string(),
+            address: 0x1000,
+            size: 5,
+            instructions: vec![Instruction::X86(X86Instruction {
+                address: 0x1000,
+                bytes: vec![0xE8, 0, 0, 0, 0],
+                mnemonic: "call".to_string(),
+                operands: "2000h".to_string(),
+                length: 5,
+                near_branch_target: Some(0x2000),
+            })],
+            is_import: false,
+            is_export: false,
+        };
+        let callee = FunctionInfo {
+            name: "sub_2000".to_string(),
+            address: 0x2000,
+            size: 1,
+            instructions: vec![x86_instr(0x2000, "ret", "")],
+            is_import: false,
+            is_export: false,
+        };
+
+        let funcs = lift_functions(&[caller, callee]);
+
+        assert!(matches!(
+            &funcs[0].body[0],
+            Statement::Expression(crate::decompiler::ast::Expression::FunctionCall {
+                function,
+                arguments
+            }) if function == "sub_2000" && arguments.is_empty()
+        ));
     }
 }

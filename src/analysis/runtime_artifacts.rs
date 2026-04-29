@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 const MAX_PYC_CANDIDATE_BYTES: usize = 1024 * 1024;
+const PYINSTALLER_COOKIE_MAGIC: &[u8] = b"MEI\x0C\x0B\x0A\x0B\x0E";
 
 /// Inputs for runtime-specific artifact extraction.
 pub struct RuntimeArtifactInputs<'a> {
@@ -45,6 +46,7 @@ pub struct RuntimeArtifact {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeArtifactKind {
     PythonBytecode,
+    PyInstallerArchive,
     PythonMarker,
     DartFlutterSnapshot,
     RuntimeEvidence,
@@ -90,6 +92,7 @@ impl RuntimeArtifactExtractor {
                         &mut used_file_names,
                         &mut result,
                     );
+                    inventory_pyinstaller_carchive_cookies(runtime, &inputs, &mut result);
                     inventory_python_markers(runtime, &inputs, &mut result);
                 }
                 RuntimeFamily::DartFlutter => {
@@ -148,6 +151,30 @@ fn inventory_python_markers(
             "imports",
             "Python runtime import",
         ));
+    }
+}
+
+fn inventory_pyinstaller_carchive_cookies(
+    runtime: &RuntimeMatch,
+    inputs: &RuntimeArtifactInputs<'_>,
+    result: &mut RuntimeArtifactResult,
+) {
+    for section in inputs.sections {
+        for offset in find_pyinstaller_cookie_offsets(&section.raw_data) {
+            let virtual_address = section.virtual_address + offset as u64;
+            result.artifacts.push(RuntimeArtifact {
+                name: format!("PyInstaller CArchive cookie at 0x{:X}", virtual_address),
+                kind: RuntimeArtifactKind::PyInstallerArchive,
+                status: RuntimeArtifactStatus::Inventoried,
+                runtime: runtime.name.to_string(),
+                source: section.name.clone(),
+                virtual_address: Some(virtual_address),
+                size: PYINSTALLER_COOKIE_MAGIC.len(),
+                file_name: None,
+                detail: "PyInstaller CArchive cookie magic detected; future parsing can use this as the archive table anchor.".to_string(),
+                payload: Vec::new(),
+            });
+        }
     }
 }
 
@@ -345,6 +372,23 @@ fn has_marker(inputs: &RuntimeArtifactInputs<'_>, needle: &str) -> bool {
             .any(|export| contains_case_insensitive(&export.name, needle))
 }
 
+fn find_pyinstaller_cookie_offsets(data: &[u8]) -> Vec<usize> {
+    if data.len() < PYINSTALLER_COOKIE_MAGIC.len() {
+        return Vec::new();
+    }
+
+    data.windows(PYINSTALLER_COOKIE_MAGIC.len())
+        .enumerate()
+        .filter_map(|(offset, window)| {
+            if window == PYINSTALLER_COOKIE_MAGIC {
+                Some(offset)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn contains_case_insensitive(haystack: &str, needle: &str) -> bool {
     haystack
         .to_ascii_lowercase()
@@ -475,6 +519,34 @@ mod tests {
             artifact.status == RuntimeArtifactStatus::Inventoried
                 && artifact.detail.contains("PyInstaller")
         }));
+    }
+
+    #[test]
+    fn pyinstaller_carchive_cookie_is_inventoried_with_address() {
+        let mut data = b"packed payload bytes".to_vec();
+        data.extend_from_slice(b"MEI\x0C\x0B\x0A\x0B\x0E");
+        data.extend_from_slice(&[0; 16]);
+        let sections = vec![section("overlay", 0x7000, &data)];
+        let runtimes = vec![runtime(RuntimeFamily::PythonPackaged)];
+
+        let result = RuntimeArtifactExtractor::new().extract(RuntimeArtifactInputs {
+            runtime_matches: &runtimes,
+            sections: &sections,
+            imports: &[] as &[ImportInfo],
+            exports: &[] as &[ExportInfo],
+            strings: &[],
+        });
+
+        let artifact = result
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.name.contains("PyInstaller CArchive"))
+            .expect("CArchive cookie should be inventoried");
+
+        assert_eq!(artifact.kind, RuntimeArtifactKind::PyInstallerArchive);
+        assert_eq!(artifact.status, RuntimeArtifactStatus::Inventoried);
+        assert_eq!(artifact.virtual_address, Some(0x7014));
+        assert!(artifact.detail.contains("cookie"));
     }
 
     #[test]

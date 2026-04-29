@@ -3,7 +3,7 @@
 use crate::analysis::functions::FunctionInfo;
 use crate::analysis::runtime::RuntimeMatch;
 use crate::analysis::strings::StringInfo;
-use crate::binary::parser::{ExportInfo, ImportInfo};
+use crate::binary::parser::{ExportInfo, ImportInfo, SectionInfo};
 use crate::disasm::control_flow::Instruction;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
@@ -16,6 +16,7 @@ pub struct AnalysisReportInputs<'a> {
     pub entry_point: u64,
     pub instruction_count: usize,
     pub basic_block_count: usize,
+    pub sections: &'a [SectionInfo],
     pub functions: &'a [FunctionInfo],
     pub strings: &'a [StringInfo],
     pub imports: &'a [ImportInfo],
@@ -27,8 +28,11 @@ pub struct AnalysisReportInputs<'a> {
 #[derive(Debug, Clone, Serialize)]
 pub struct AnalysisReportPackage {
     pub summary: AnalysisSummary,
+    pub cfg_summary: CfgSummaryReport,
     pub functions: Vec<FunctionReport>,
+    pub sections: Vec<SectionReport>,
     pub strings: Vec<StringReport>,
+    pub suspicious_strings: Vec<SuspiciousStringReport>,
     pub imports: Vec<ImportReport>,
     pub exports: Vec<ExportReport>,
 }
@@ -58,6 +62,16 @@ pub struct RuntimeHintReport {
     pub guidance: String,
 }
 
+/// CFG-wide summary for quick triage.
+#[derive(Debug, Clone, Serialize)]
+pub struct CfgSummaryReport {
+    pub basic_block_count: usize,
+    pub direct_call_count: usize,
+    pub conditional_branch_count: usize,
+    pub unconditional_branch_count: usize,
+    pub return_count: usize,
+}
+
 /// Function relationship report.
 #[derive(Debug, Clone, Serialize)]
 pub struct FunctionReport {
@@ -65,10 +79,25 @@ pub struct FunctionReport {
     pub address: u64,
     pub size: usize,
     pub instruction_count: usize,
+    pub basic_block_estimate: usize,
     pub is_import: bool,
     pub is_export: bool,
     pub calls: Vec<CallReference>,
     pub string_refs: Vec<StringReference>,
+}
+
+/// Binary section report.
+#[derive(Debug, Clone, Serialize)]
+pub struct SectionReport {
+    pub name: String,
+    pub virtual_address: u64,
+    pub size: u64,
+    pub raw_size: usize,
+    pub is_code: bool,
+    pub is_data: bool,
+    pub is_readable: bool,
+    pub is_writable: bool,
+    pub is_executable: bool,
 }
 
 /// Direct call target reference.
@@ -96,6 +125,15 @@ pub struct StringReport {
     pub value: String,
     pub encoding: String,
     pub length: usize,
+}
+
+/// Suspicious or high-signal string report.
+#[derive(Debug, Clone, Serialize)]
+pub struct SuspiciousStringReport {
+    pub address: u64,
+    pub symbol: String,
+    pub value: String,
+    pub category: String,
 }
 
 /// Import table report.
@@ -130,6 +168,13 @@ impl AnalysisReportBuilder {
             .map(|string| (string.address, string))
             .collect::<HashMap<_, _>>();
 
+        let functions = inputs
+            .functions
+            .iter()
+            .map(|function| function_report(function, &function_names, &string_map))
+            .collect::<Vec<_>>();
+        let cfg_summary = cfg_summary(inputs.basic_block_count, inputs.functions);
+
         AnalysisReportPackage {
             summary: AnalysisSummary {
                 input_path: inputs.input_path.to_string(),
@@ -153,12 +198,15 @@ impl AnalysisReportBuilder {
                     })
                     .collect(),
             },
-            functions: inputs
-                .functions
-                .iter()
-                .map(|function| function_report(function, &function_names, &string_map))
-                .collect(),
+            cfg_summary,
+            functions,
+            sections: inputs.sections.iter().map(section_report).collect(),
             strings: string_reports,
+            suspicious_strings: inputs
+                .strings
+                .iter()
+                .filter_map(suspicious_string_report)
+                .collect(),
             imports: inputs
                 .imports
                 .iter()
@@ -203,10 +251,59 @@ fn function_report(
         address: function.address,
         size: function.size,
         instruction_count: function.instructions.len(),
+        basic_block_estimate: basic_block_estimate(function),
         is_import: function.is_import,
         is_export: function.is_export,
         calls: call_references(function, function_names),
         string_refs: string_references(function, strings),
+    }
+}
+
+fn cfg_summary(basic_block_count: usize, functions: &[FunctionInfo]) -> CfgSummaryReport {
+    let mut direct_call_count = 0;
+    let mut conditional_branch_count = 0;
+    let mut unconditional_branch_count = 0;
+    let mut return_count = 0;
+
+    for instruction in functions.iter().flat_map(|function| &function.instructions) {
+        if instruction.is_call() {
+            direct_call_count += 1;
+        }
+        if instruction.is_conditional_jump() {
+            conditional_branch_count += 1;
+        }
+        if instruction.is_unconditional_jump() {
+            unconditional_branch_count += 1;
+        }
+        if instruction.is_return() {
+            return_count += 1;
+        }
+    }
+
+    CfgSummaryReport {
+        basic_block_count,
+        direct_call_count,
+        conditional_branch_count,
+        unconditional_branch_count,
+        return_count,
+    }
+}
+
+fn basic_block_estimate(function: &FunctionInfo) -> usize {
+    let branch_or_call_count = function
+        .instructions
+        .iter()
+        .filter(|instruction| {
+            instruction.is_call()
+                || instruction.is_conditional_jump()
+                || instruction.is_unconditional_jump()
+        })
+        .count();
+
+    if function.instructions.is_empty() {
+        0
+    } else {
+        branch_or_call_count + 1
     }
 }
 
@@ -320,6 +417,60 @@ fn string_report(string: &StringInfo) -> StringReport {
     }
 }
 
+fn section_report(section: &SectionInfo) -> SectionReport {
+    SectionReport {
+        name: section.name.clone(),
+        virtual_address: section.virtual_address,
+        size: section.size,
+        raw_size: section.raw_data.len(),
+        is_code: section.characteristics.is_code,
+        is_data: section.characteristics.is_data,
+        is_readable: section.characteristics.is_readable,
+        is_writable: section.characteristics.is_writable,
+        is_executable: section.characteristics.is_executable,
+    }
+}
+
+fn suspicious_string_report(string: &StringInfo) -> Option<SuspiciousStringReport> {
+    let category = suspicious_string_category(&string.value)?;
+    Some(SuspiciousStringReport {
+        address: string.address,
+        symbol: string_symbol(string.address),
+        value: string.value.clone(),
+        category: category.to_string(),
+    })
+}
+
+fn suspicious_string_category(value: &str) -> Option<&'static str> {
+    let lower = value.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") {
+        Some("url")
+    } else if lower.contains("powershell")
+        || lower.contains("cmd.exe")
+        || lower.contains("/bin/sh")
+        || lower.contains("curl ")
+        || lower.contains("wget ")
+    {
+        Some("command")
+    } else if lower.contains("password")
+        || lower.contains("passwd")
+        || lower.contains("token")
+        || lower.contains("apikey")
+        || lower.contains("api_key")
+        || lower.contains("secret")
+    {
+        Some("credential_hint")
+    } else if lower.ends_with(".dll")
+        || lower.ends_with(".exe")
+        || lower.ends_with(".sys")
+        || lower.contains("\\software\\")
+    {
+        Some("platform_indicator")
+    } else {
+        None
+    }
+}
+
 fn string_symbol(address: u64) -> String {
     format!("str_{:X}", address)
 }
@@ -329,7 +480,7 @@ mod tests {
     use super::*;
     use crate::analysis::functions::FunctionInfo;
     use crate::analysis::strings::{StringEncoding, StringInfo};
-    use crate::binary::parser::{ExportInfo, ImportInfo};
+    use crate::binary::parser::{ExportInfo, ImportInfo, SectionCharacteristics, SectionInfo};
     use crate::disasm::control_flow::Instruction;
     use crate::disasm::X86Instruction;
 
@@ -382,6 +533,7 @@ mod tests {
             entry_point: 0x1000,
             instruction_count: 2,
             basic_block_count: 2,
+            sections: &[],
             functions: &functions,
             strings: &[],
             imports: &[],
@@ -416,6 +568,7 @@ mod tests {
             entry_point: 0x1000,
             instruction_count: 1,
             basic_block_count: 1,
+            sections: &[],
             functions: &functions,
             strings: &strings,
             imports: &[],
@@ -455,6 +608,7 @@ mod tests {
             entry_point: 0x1000,
             instruction_count: 1,
             basic_block_count: 1,
+            sections: &[],
             functions: &functions,
             strings: &strings,
             imports: &imports,
@@ -468,5 +622,81 @@ mod tests {
         assert_eq!(package.summary.export_count, 1);
         assert_eq!(package.imports[0].functions, vec!["CreateFileW"]);
         assert_eq!(package.exports[0].ordinal, Some(1));
+    }
+
+    fn section(
+        name: &str,
+        address: u64,
+        size: u64,
+        characteristics: SectionCharacteristics,
+    ) -> SectionInfo {
+        SectionInfo {
+            name: name.to_string(),
+            virtual_address: address,
+            size,
+            raw_data: vec![0; size as usize],
+            characteristics,
+        }
+    }
+
+    #[test]
+    fn package_includes_sections_cfg_summary_and_suspicious_strings() {
+        let sections = vec![
+            section(
+                ".text",
+                0x1000,
+                0x200,
+                SectionCharacteristics {
+                    is_code: true,
+                    is_readable: true,
+                    is_executable: true,
+                    ..SectionCharacteristics::default()
+                },
+            ),
+            section(
+                ".rdata",
+                0x3000,
+                0x80,
+                SectionCharacteristics {
+                    is_data: true,
+                    is_readable: true,
+                    ..SectionCharacteristics::default()
+                },
+            ),
+        ];
+        let functions = vec![function(
+            "sub_1000",
+            0x1000,
+            vec![
+                x86(0x1000, "call", "2000h", Some(0x2000)),
+                x86(0x1005, "jne", "1010h", Some(0x1010)),
+            ],
+        )];
+        let strings = vec![string(0x3000, "http://evil.test/payload")];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 2,
+            basic_block_count: 3,
+            sections: &sections,
+            functions: &functions,
+            strings: &strings,
+            imports: &[],
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        assert_eq!(package.sections.len(), 2);
+        assert_eq!(package.sections[0].name, ".text");
+        assert!(package.sections[0].is_executable);
+        assert_eq!(package.cfg_summary.basic_block_count, 3);
+        assert_eq!(package.cfg_summary.direct_call_count, 1);
+        assert_eq!(package.cfg_summary.conditional_branch_count, 1);
+        assert_eq!(package.functions[0].basic_block_estimate, 3);
+        assert_eq!(package.suspicious_strings[0].address, 0x3000);
+        assert_eq!(package.suspicious_strings[0].category, "url");
     }
 }

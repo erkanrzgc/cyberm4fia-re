@@ -1,9 +1,12 @@
 //! Decompiler CLI
 
+use anyhow::Context;
 use clap::Parser;
 use decompiler::analysis::functions::FunctionDetectionInputs;
+use decompiler::analysis::runtime_artifacts::RuntimeArtifactStatus;
 use decompiler::analysis::{
-    FunctionDetector, RuntimeDetectionInputs, RuntimeDetector, RuntimeReportBuilder,
+    FunctionDetector, RuntimeArtifactExtractor, RuntimeArtifactInputs, RuntimeArtifactResult,
+    RuntimeDetectionInputs, RuntimeDetector, RuntimeMatch, RuntimeReport, RuntimeReportBuilder,
     RuntimeReportInputs, StringExtractor,
 };
 use decompiler::binary::parse_binary;
@@ -12,6 +15,7 @@ use decompiler::decompiler::{
     structure_functions_with_cfg, CGenerator, CGeneratorConfig, OptimizationLevel, Optimizer,
 };
 use decompiler::disasm::{ArmDisassembler, ControlFlowGraph, Instruction, X86Disassembler};
+use std::path::{Path, PathBuf};
 use tracing::{error, info};
 
 #[derive(Parser)]
@@ -37,6 +41,14 @@ struct Cli {
     /// Verbose output
     #[arg(short, long)]
     verbose: bool,
+
+    /// Extract runtime-specific artifacts and write a manifest/report directory
+    #[arg(long)]
+    extract_runtime_artifacts: bool,
+
+    /// Directory for runtime artifacts (default: <input-stem>_artifacts)
+    #[arg(long)]
+    artifacts_dir: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -166,6 +178,23 @@ fn main() -> anyhow::Result<()> {
         sections: &sections,
         strings: &all_strings,
     });
+    if cli.extract_runtime_artifacts {
+        let artifact_result = RuntimeArtifactExtractor::new().extract(RuntimeArtifactInputs {
+            runtime_matches: &runtime_matches,
+            sections: &sections,
+            imports: &imports,
+            exports: &exports,
+            strings: &all_strings,
+        });
+        let artifacts_dir = resolve_artifacts_dir(&cli.input, cli.artifacts_dir.as_deref());
+        write_runtime_artifacts(
+            &artifacts_dir,
+            &runtime_matches,
+            &runtime_reports,
+            &artifact_result,
+        )?;
+        info!("Runtime artifacts written to: {}", artifacts_dir.display());
+    }
 
     // Build control flow graph
     info!("Building control flow graph...");
@@ -301,4 +330,137 @@ fn main() -> anyhow::Result<()> {
     info!("Decompilation complete!");
 
     Ok(())
+}
+
+fn resolve_artifacts_dir(input: &str, explicit_dir: Option<&str>) -> PathBuf {
+    if let Some(path) = explicit_dir {
+        return PathBuf::from(path);
+    }
+
+    let stem = Path::new(input)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("runtime");
+    PathBuf::from(format!("{stem}_artifacts"))
+}
+
+fn write_runtime_artifacts(
+    artifacts_dir: &Path,
+    runtime_matches: &[RuntimeMatch],
+    runtime_reports: &[RuntimeReport],
+    artifact_result: &RuntimeArtifactResult,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(artifacts_dir).with_context(|| {
+        format!(
+            "failed to create runtime artifact directory {}",
+            artifacts_dir.display()
+        )
+    })?;
+
+    for artifact in &artifact_result.artifacts {
+        if artifact.status != RuntimeArtifactStatus::Extracted {
+            continue;
+        }
+        let Some(file_name) = artifact.file_name.as_deref() else {
+            continue;
+        };
+        let output_path = artifacts_dir.join(file_name);
+        std::fs::write(&output_path, &artifact.payload).with_context(|| {
+            format!(
+                "failed to write extracted artifact {}",
+                output_path.display()
+            )
+        })?;
+    }
+
+    let manifest = serde_json::to_string_pretty(artifact_result)
+        .context("failed to serialize runtime artifact manifest")?;
+    let manifest_path = artifacts_dir.join("artifacts_manifest.json");
+    std::fs::write(&manifest_path, manifest).with_context(|| {
+        format!(
+            "failed to write runtime artifact manifest {}",
+            manifest_path.display()
+        )
+    })?;
+
+    let report = format_runtime_artifact_report(runtime_matches, runtime_reports, artifact_result);
+    let report_path = artifacts_dir.join("runtime_report.txt");
+    std::fs::write(&report_path, report).with_context(|| {
+        format!(
+            "failed to write runtime artifact report {}",
+            report_path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn format_runtime_artifact_report(
+    runtime_matches: &[RuntimeMatch],
+    runtime_reports: &[RuntimeReport],
+    artifact_result: &RuntimeArtifactResult,
+) -> String {
+    let mut report = String::new();
+    report.push_str("cyberm4fia-re runtime artifact report\n");
+    report.push_str("======================================\n\n");
+
+    if runtime_matches.is_empty() {
+        report.push_str("No runtime/language family hints detected.\n");
+        report.push_str("No runtime artifacts were found.\n\n");
+    } else {
+        report.push_str("Runtime hints:\n");
+        for runtime in runtime_matches {
+            report.push_str(&format!(
+                "- {} ({}%): {}\n",
+                runtime.name,
+                runtime.confidence,
+                runtime.evidence.join("; ")
+            ));
+            report.push_str(&format!("  Guidance: {}\n", runtime.guidance));
+        }
+        report.push('\n');
+    }
+
+    if !runtime_reports.is_empty() {
+        report.push_str("Runtime reports:\n");
+        for runtime_report in runtime_reports {
+            report.push_str(&format!(
+                "- {}: {}\n",
+                runtime_report.title, runtime_report.summary
+            ));
+            for action in &runtime_report.actions {
+                report.push_str(&format!("  Action: {} - {}\n", action.label, action.detail));
+            }
+        }
+        report.push('\n');
+    }
+
+    if !artifact_result.notes.is_empty() {
+        report.push_str("Notes:\n");
+        for note in &artifact_result.notes {
+            report.push_str(&format!("- {note}\n"));
+        }
+        report.push('\n');
+    }
+
+    if artifact_result.artifacts.is_empty() {
+        report.push_str("Artifacts: none\n");
+    } else {
+        report.push_str("Artifacts:\n");
+        for artifact in &artifact_result.artifacts {
+            report.push_str(&format!(
+                "- {} [{:?}/{:?}] {}\n",
+                artifact.name, artifact.kind, artifact.status, artifact.detail
+            ));
+            if let Some(address) = artifact.virtual_address {
+                report.push_str(&format!("  Address: 0x{address:X}\n"));
+            }
+            if let Some(file_name) = artifact.file_name.as_deref() {
+                report.push_str(&format!("  File: {file_name}\n"));
+            }
+        }
+    }
+
+    report
 }

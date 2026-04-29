@@ -418,9 +418,15 @@ fn write_analysis_report_package(
 
     write_json_file(report_dir, "analysis_package.json", package)?;
     write_json_file(report_dir, "functions.json", &package.functions)?;
+    write_json_file(report_dir, "call_graph.json", &package.call_graph)?;
     write_json_file(report_dir, "sections.json", &package.sections)?;
     write_json_file(report_dir, "cfg_summary.json", &package.cfg_summary)?;
     write_json_file(report_dir, "strings.json", &package.strings)?;
+    write_json_file(
+        report_dir,
+        "strings_by_function.json",
+        &package.strings_by_function,
+    )?;
     write_json_file(
         report_dir,
         "suspicious_strings.json",
@@ -504,9 +510,11 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str("\nFiles:\n");
     report.push_str("- decompiled.c\n");
     report.push_str("- functions.json\n");
+    report.push_str("- call_graph.json\n");
     report.push_str("- sections.json\n");
     report.push_str("- cfg_summary.json\n");
     report.push_str("- strings.json\n");
+    report.push_str("- strings_by_function.json\n");
     report.push_str("- suspicious_strings.json\n");
     report.push_str("- imports.json\n");
     report.push_str("- exports.json\n");

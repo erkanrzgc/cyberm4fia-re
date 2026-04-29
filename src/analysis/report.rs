@@ -30,9 +30,11 @@ pub struct AnalysisReportPackage {
     pub summary: AnalysisSummary,
     pub cfg_summary: CfgSummaryReport,
     pub functions: Vec<FunctionReport>,
+    pub call_graph: Vec<CallGraphEdge>,
     pub sections: Vec<SectionReport>,
     pub strings: Vec<StringReport>,
     pub suspicious_strings: Vec<SuspiciousStringReport>,
+    pub strings_by_function: Vec<FunctionStringIndex>,
     pub imports: Vec<ImportReport>,
     pub exports: Vec<ExportReport>,
 }
@@ -86,6 +88,17 @@ pub struct FunctionReport {
     pub string_refs: Vec<StringReference>,
 }
 
+/// One call graph edge, grouped by caller and callee.
+#[derive(Debug, Clone, Serialize)]
+pub struct CallGraphEdge {
+    pub caller_name: String,
+    pub caller_address: u64,
+    pub callee_address: u64,
+    pub callee_name: Option<String>,
+    pub call_count: usize,
+    pub call_sites: Vec<u64>,
+}
+
 /// Binary section report.
 #[derive(Debug, Clone, Serialize)]
 pub struct SectionReport {
@@ -136,6 +149,14 @@ pub struct SuspiciousStringReport {
     pub category: String,
 }
 
+/// String references grouped by function.
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionStringIndex {
+    pub function_name: String,
+    pub function_address: u64,
+    pub strings: Vec<StringReference>,
+}
+
 /// Import table report.
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportReport {
@@ -174,6 +195,8 @@ impl AnalysisReportBuilder {
             .map(|function| function_report(function, &function_names, &string_map))
             .collect::<Vec<_>>();
         let cfg_summary = cfg_summary(inputs.basic_block_count, inputs.functions);
+        let call_graph = call_graph_edges(&functions);
+        let strings_by_function = strings_by_function(&functions);
 
         AnalysisReportPackage {
             summary: AnalysisSummary {
@@ -200,6 +223,7 @@ impl AnalysisReportBuilder {
             },
             cfg_summary,
             functions,
+            call_graph,
             sections: inputs.sections.iter().map(section_report).collect(),
             strings: string_reports,
             suspicious_strings: inputs
@@ -207,6 +231,7 @@ impl AnalysisReportBuilder {
                 .iter()
                 .filter_map(suspicious_string_report)
                 .collect(),
+            strings_by_function,
             imports: inputs
                 .imports
                 .iter()
@@ -232,6 +257,43 @@ impl Default for AnalysisReportBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn call_graph_edges(functions: &[FunctionReport]) -> Vec<CallGraphEdge> {
+    let mut edges: HashMap<(u64, u64), CallGraphEdge> = HashMap::new();
+
+    for function in functions {
+        for call in &function.calls {
+            let edge = edges
+                .entry((function.address, call.target_address))
+                .or_insert_with(|| CallGraphEdge {
+                    caller_name: function.name.clone(),
+                    caller_address: function.address,
+                    callee_address: call.target_address,
+                    callee_name: call.target_name.clone(),
+                    call_count: 0,
+                    call_sites: Vec::new(),
+                });
+            edge.call_count += 1;
+            edge.call_sites.push(call.instruction_address);
+        }
+    }
+
+    let mut edges = edges.into_values().collect::<Vec<_>>();
+    edges.sort_by_key(|edge| (edge.caller_address, edge.callee_address));
+    edges
+}
+
+fn strings_by_function(functions: &[FunctionReport]) -> Vec<FunctionStringIndex> {
+    functions
+        .iter()
+        .filter(|function| !function.string_refs.is_empty())
+        .map(|function| FunctionStringIndex {
+            function_name: function.name.clone(),
+            function_address: function.address,
+            strings: function.string_refs.clone(),
+        })
+        .collect()
 }
 
 fn build_function_name_map(functions: &[FunctionInfo]) -> HashMap<u64, String> {
@@ -698,5 +760,77 @@ mod tests {
         assert_eq!(package.functions[0].basic_block_estimate, 3);
         assert_eq!(package.suspicious_strings[0].address, 0x3000);
         assert_eq!(package.suspicious_strings[0].category, "url");
+    }
+
+    #[test]
+    fn package_builds_deduplicated_call_graph_edges_with_call_sites() {
+        let functions = vec![
+            function(
+                "sub_1000",
+                0x1000,
+                vec![
+                    x86(0x1000, "call", "2000h", Some(0x2000)),
+                    x86(0x1005, "call", "2000h", Some(0x2000)),
+                ],
+            ),
+            function("sub_2000", 0x2000, vec![x86(0x2000, "ret", "", None)]),
+        ];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 3,
+            basic_block_count: 2,
+            sections: &[],
+            functions: &functions,
+            strings: &[],
+            imports: &[],
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        assert_eq!(package.call_graph.len(), 1);
+        assert_eq!(package.call_graph[0].caller_name, "sub_1000");
+        assert_eq!(
+            package.call_graph[0].callee_name.as_deref(),
+            Some("sub_2000")
+        );
+        assert_eq!(package.call_graph[0].call_count, 2);
+        assert_eq!(package.call_graph[0].call_sites, vec![0x1000, 0x1005]);
+    }
+
+    #[test]
+    fn package_indexes_strings_by_function() {
+        let functions = vec![
+            function(
+                "sub_1000",
+                0x1000,
+                vec![x86(0x1000, "lea", "rcx, [3000h]", None)],
+            ),
+            function("sub_2000", 0x2000, vec![x86(0x2000, "ret", "", None)]),
+        ];
+        let strings = vec![string(0x3000, "hello")];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 2,
+            basic_block_count: 2,
+            sections: &[],
+            functions: &functions,
+            strings: &strings,
+            imports: &[],
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        assert_eq!(package.strings_by_function.len(), 1);
+        assert_eq!(package.strings_by_function[0].function_name, "sub_1000");
+        assert_eq!(package.strings_by_function[0].strings.len(), 1);
+        assert_eq!(package.strings_by_function[0].strings[0].symbol, "str_3000");
     }
 }

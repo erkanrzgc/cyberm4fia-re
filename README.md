@@ -22,7 +22,7 @@
   <img src="https://img.shields.io/badge/rust-1.75+-blue?style=flat-square&logo=rust" alt="rust">
   <img src="https://img.shields.io/badge/crates-12+-purple?style=flat-square" alt="crates">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/tests-106%20passing-orange?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/badge/tests-108%20passing-orange?style=flat-square" alt="tests">
   <img src="https://img.shields.io/github/last-commit/erkanrzgc/cyberm4fia-re?style=flat-square" alt="last commit">
 </p>
 
@@ -60,7 +60,7 @@
 | **Runtime Detection** | Python/PyInstaller/Nuitka, Dart/Flutter, .NET, Go, Rust, Electron/Node, JVM hints |
 | **Runtime Reports** | Actionable Python extraction, Dart/Flutter snapshot, CLR/IL, Go/Rust, Electron, JVM guidance |
 | **Runtime Artifact Extraction** | Writes `runtime_report.txt`, `artifacts_manifest.json`, Python `.pyc` candidates, PyInstaller CArchive cookie inventory, and Dart/Flutter snapshot inventory |
-| **RE Report Package** | Writes `report.txt`, `decompiled.c`, `functions.json`, `sections.json`, `cfg_summary.json`, `strings.json`, `suspicious_strings.json`, `imports.json`, `exports.json`, and `analysis_package.json` |
+| **RE Report Package** | Writes `report.txt`, `decompiled.c`, `functions.json`, `call_graph.json`, `sections.json`, `cfg_summary.json`, `strings.json`, `strings_by_function.json`, `suspicious_strings.json`, `imports.json`, `exports.json`, and `analysis_package.json` |
 | **CFG Construction** | Control-flow graph via `petgraph` |
 | **Function Detection** | Entry point, exports, call targets, MSVC prologues |
 | **AST Lifting** | Pseudo-register and stack assignments (`mov`, `xor reg, reg`, `[rbp-8]`, …) |
@@ -133,10 +133,11 @@ AOT inputs are inventoried as snapshots/markers; exact Dart source recovery is
 not claimed.
 
 Report package mode writes `report.txt`, `decompiled.c`, `functions.json`,
-`sections.json`, `cfg_summary.json`, `strings.json`, `suspicious_strings.json`,
-`imports.json`, `exports.json`, and `analysis_package.json`. Function reports
-include direct x86/x64 call targets, basic-block estimates, and exact string
-references when the binary exposes referenced string addresses.
+`call_graph.json`, `sections.json`, `cfg_summary.json`, `strings.json`,
+`strings_by_function.json`, `suspicious_strings.json`, `imports.json`,
+`exports.json`, and `analysis_package.json`. Function reports include direct
+x86/x64 call targets, grouped call graph edges, basic-block estimates, and exact
+string references when the binary exposes referenced string addresses.
 
 **Windows smoke test:**
 ```bash
@@ -179,7 +180,7 @@ cargo test --lib
 | `disasm::control_flow` | 6 |
 | `binary::parser` | 5 |
 | `analysis::functions` | 7 |
-| `analysis::report` | 4 |
+| `analysis::report` | 6 |
 | `analysis::runtime` | 10 |
 | `analysis::runtime_artifacts` | 5 |
 | `analysis::runtime_report` | 4 |

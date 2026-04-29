@@ -6,7 +6,7 @@ use crate::analysis::strings::StringInfo;
 use crate::binary::parser::{ExportInfo, ImportInfo, SectionInfo};
 use crate::disasm::control_flow::Instruction;
 use serde::Serialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Inputs for building a complete reverse-engineering report package.
 pub struct AnalysisReportInputs<'a> {
@@ -31,10 +31,13 @@ pub struct AnalysisReportPackage {
     pub cfg_summary: CfgSummaryReport,
     pub functions: Vec<FunctionReport>,
     pub call_graph: Vec<CallGraphEdge>,
+    pub xrefs: XrefReport,
     pub sections: Vec<SectionReport>,
     pub strings: Vec<StringReport>,
     pub suspicious_strings: Vec<SuspiciousStringReport>,
     pub strings_by_function: Vec<FunctionStringIndex>,
+    pub api_insights: Vec<ApiInsightReport>,
+    pub behavior_report: BehaviorReport,
     pub imports: Vec<ImportReport>,
     pub exports: Vec<ExportReport>,
 }
@@ -157,6 +160,77 @@ pub struct FunctionStringIndex {
     pub strings: Vec<StringReference>,
 }
 
+/// Cross-reference index for fast triage.
+#[derive(Debug, Clone, Serialize)]
+pub struct XrefReport {
+    pub functions: Vec<FunctionXrefReport>,
+    pub imports: Vec<ImportXrefReport>,
+}
+
+/// Per-function cross-reference view.
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionXrefReport {
+    pub function_name: String,
+    pub function_address: u64,
+    pub calls_out: Vec<CallReference>,
+    pub called_by: Vec<CallerReference>,
+    pub strings: Vec<StringReference>,
+}
+
+/// Caller site for a function.
+#[derive(Debug, Clone, Serialize)]
+pub struct CallerReference {
+    pub caller_name: String,
+    pub caller_address: u64,
+    pub instruction_address: u64,
+}
+
+/// Import-table cross-reference entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImportXrefReport {
+    pub library: String,
+    pub function: String,
+    pub category: Option<String>,
+    pub severity: Option<String>,
+}
+
+/// High-signal imported API classification.
+#[derive(Debug, Clone, Serialize)]
+pub struct ApiInsightReport {
+    pub library: String,
+    pub function: String,
+    pub category: String,
+    pub severity: String,
+    pub summary: String,
+}
+
+/// Behavior-focused triage summary.
+#[derive(Debug, Clone, Serialize)]
+pub struct BehaviorReport {
+    pub risk_score: u8,
+    pub risk_level: String,
+    pub categories: Vec<BehaviorCategoryReport>,
+    pub findings: Vec<BehaviorFinding>,
+}
+
+/// Behavior category aggregate.
+#[derive(Debug, Clone, Serialize)]
+pub struct BehaviorCategoryReport {
+    pub name: String,
+    pub severity: String,
+    pub evidence_count: usize,
+    pub evidence: Vec<String>,
+}
+
+/// One behavior finding.
+#[derive(Debug, Clone, Serialize)]
+pub struct BehaviorFinding {
+    pub category: String,
+    pub severity: String,
+    pub source: String,
+    pub detail: String,
+}
+
 /// Import table report.
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportReport {
@@ -197,6 +271,15 @@ impl AnalysisReportBuilder {
         let cfg_summary = cfg_summary(inputs.basic_block_count, inputs.functions);
         let call_graph = call_graph_edges(&functions);
         let strings_by_function = strings_by_function(&functions);
+        let suspicious_strings = inputs
+            .strings
+            .iter()
+            .filter_map(suspicious_string_report)
+            .collect::<Vec<_>>();
+        let api_insights = api_insights(inputs.imports);
+        let xrefs = xref_report(&functions, inputs.imports, &api_insights);
+        let behavior_report =
+            behavior_report(&api_insights, &suspicious_strings, inputs.runtime_matches);
 
         AnalysisReportPackage {
             summary: AnalysisSummary {
@@ -224,14 +307,13 @@ impl AnalysisReportBuilder {
             cfg_summary,
             functions,
             call_graph,
+            xrefs,
             sections: inputs.sections.iter().map(section_report).collect(),
             strings: string_reports,
-            suspicious_strings: inputs
-                .strings
-                .iter()
-                .filter_map(suspicious_string_report)
-                .collect(),
+            suspicious_strings,
             strings_by_function,
+            api_insights,
+            behavior_report,
             imports: inputs
                 .imports
                 .iter()
@@ -294,6 +376,276 @@ fn strings_by_function(functions: &[FunctionReport]) -> Vec<FunctionStringIndex>
             strings: function.string_refs.clone(),
         })
         .collect()
+}
+
+fn xref_report(
+    functions: &[FunctionReport],
+    imports: &[ImportInfo],
+    api_insights: &[ApiInsightReport],
+) -> XrefReport {
+    let mut called_by: HashMap<u64, Vec<CallerReference>> = HashMap::new();
+
+    for function in functions {
+        for call in &function.calls {
+            called_by
+                .entry(call.target_address)
+                .or_default()
+                .push(CallerReference {
+                    caller_name: function.name.clone(),
+                    caller_address: function.address,
+                    instruction_address: call.instruction_address,
+                });
+        }
+    }
+
+    let mut function_xrefs = functions
+        .iter()
+        .map(|function| {
+            let mut callers = called_by.remove(&function.address).unwrap_or_default();
+            callers.sort_by_key(|caller| (caller.caller_address, caller.instruction_address));
+
+            FunctionXrefReport {
+                function_name: function.name.clone(),
+                function_address: function.address,
+                calls_out: function.calls.clone(),
+                called_by: callers,
+                strings: function.string_refs.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    function_xrefs.sort_by_key(|xref| xref.function_address);
+
+    XrefReport {
+        functions: function_xrefs,
+        imports: import_xrefs(imports, api_insights),
+    }
+}
+
+fn import_xrefs(
+    imports: &[ImportInfo],
+    api_insights: &[ApiInsightReport],
+) -> Vec<ImportXrefReport> {
+    let insight_map = api_insights
+        .iter()
+        .map(|insight| {
+            (
+                (
+                    insight.library.to_ascii_lowercase(),
+                    insight.function.to_ascii_lowercase(),
+                ),
+                insight,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let mut xrefs = Vec::new();
+    for import in imports {
+        for function in &import.functions {
+            let insight = insight_map.get(&(
+                import.name.to_ascii_lowercase(),
+                function.to_ascii_lowercase(),
+            ));
+            xrefs.push(ImportXrefReport {
+                library: import.name.clone(),
+                function: function.clone(),
+                category: insight.map(|insight| insight.category.clone()),
+                severity: insight.map(|insight| insight.severity.clone()),
+            });
+        }
+    }
+    xrefs.sort_by(|left, right| {
+        (
+            left.library.to_ascii_lowercase(),
+            left.function.to_ascii_lowercase(),
+        )
+            .cmp(&(
+                right.library.to_ascii_lowercase(),
+                right.function.to_ascii_lowercase(),
+            ))
+    });
+    xrefs
+}
+
+fn api_insights(imports: &[ImportInfo]) -> Vec<ApiInsightReport> {
+    let mut insights = Vec::new();
+
+    for import in imports {
+        for function in &import.functions {
+            let Some((category, severity, summary)) = classify_api(function) else {
+                continue;
+            };
+            insights.push(ApiInsightReport {
+                library: import.name.clone(),
+                function: function.clone(),
+                category: category.to_string(),
+                severity: severity.to_string(),
+                summary: summary.to_string(),
+            });
+        }
+    }
+
+    insights.sort_by(|left, right| {
+        severity_rank(&right.severity)
+            .cmp(&severity_rank(&left.severity))
+            .then_with(|| left.category.cmp(&right.category))
+            .then_with(|| {
+                left.library
+                    .to_ascii_lowercase()
+                    .cmp(&right.library.to_ascii_lowercase())
+            })
+            .then_with(|| {
+                left.function
+                    .to_ascii_lowercase()
+                    .cmp(&right.function.to_ascii_lowercase())
+            })
+    });
+    insights
+}
+
+fn behavior_report(
+    api_insights: &[ApiInsightReport],
+    suspicious_strings: &[SuspiciousStringReport],
+    runtime_matches: &[RuntimeMatch],
+) -> BehaviorReport {
+    let mut findings = Vec::new();
+
+    for insight in api_insights {
+        findings.push(BehaviorFinding {
+            category: insight.category.clone(),
+            severity: insight.severity.clone(),
+            source: "import_table".to_string(),
+            detail: format!(
+                "{}!{} - {}",
+                insight.library, insight.function, insight.summary
+            ),
+        });
+    }
+
+    for string in suspicious_strings {
+        let (category, severity) = behavior_from_string_category(&string.category);
+        findings.push(BehaviorFinding {
+            category: category.to_string(),
+            severity: severity.to_string(),
+            source: "string".to_string(),
+            detail: format!(
+                "{} @ 0x{:X}: {}",
+                string.symbol, string.address, string.value
+            ),
+        });
+    }
+
+    for runtime in runtime_matches {
+        if runtime.confidence >= 70 {
+            findings.push(BehaviorFinding {
+                category: "runtime_packaging".to_string(),
+                severity: "low".to_string(),
+                source: "runtime_detector".to_string(),
+                detail: format!("{} ({}%)", runtime.name, runtime.confidence),
+            });
+        }
+    }
+
+    findings.sort_by(|left, right| {
+        severity_rank(&right.severity)
+            .cmp(&severity_rank(&left.severity))
+            .then_with(|| left.category.cmp(&right.category))
+            .then_with(|| left.detail.cmp(&right.detail))
+    });
+
+    let categories = behavior_categories(&findings);
+    let risk_score = risk_score(&findings);
+    let risk_level = risk_level(risk_score).to_string();
+
+    BehaviorReport {
+        risk_score,
+        risk_level,
+        categories,
+        findings,
+    }
+}
+
+fn behavior_categories(findings: &[BehaviorFinding]) -> Vec<BehaviorCategoryReport> {
+    let mut grouped: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
+
+    for finding in findings {
+        let entry = grouped
+            .entry(finding.category.clone())
+            .or_insert_with(|| (finding.severity.clone(), Vec::new()));
+        if severity_rank(&finding.severity) > severity_rank(&entry.0) {
+            entry.0 = finding.severity.clone();
+        }
+        entry.1.push(finding.detail.clone());
+    }
+
+    let mut categories = grouped
+        .into_iter()
+        .map(|(name, (severity, evidence))| BehaviorCategoryReport {
+            name,
+            severity,
+            evidence_count: evidence.len(),
+            evidence,
+        })
+        .collect::<Vec<_>>();
+    categories.sort_by(|left, right| {
+        severity_rank(&right.severity)
+            .cmp(&severity_rank(&left.severity))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    categories
+}
+
+fn risk_score(findings: &[BehaviorFinding]) -> u8 {
+    let mut category_weights: HashMap<&str, u8> = HashMap::new();
+
+    for finding in findings {
+        let weight = match finding.severity.as_str() {
+            "high" => 35,
+            "medium" => 8,
+            "low" => 2,
+            _ => 0,
+        };
+        let entry = category_weights
+            .entry(finding.category.as_str())
+            .or_insert(0);
+        *entry = (*entry).max(weight);
+    }
+
+    let string_bonus = findings
+        .iter()
+        .filter(|finding| finding.source == "string")
+        .count()
+        .min(4) as u8
+        * 2;
+    let total = category_weights
+        .values()
+        .sum::<u8>()
+        .saturating_add(string_bonus);
+    if findings
+        .iter()
+        .any(|finding| finding.severity.as_str() == "high")
+    {
+        total.min(100)
+    } else {
+        total.min(69)
+    }
+}
+
+fn risk_level(score: u8) -> &'static str {
+    match score {
+        70..=100 => "high",
+        25..=69 => "medium",
+        1..=24 => "low",
+        _ => "none",
+    }
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
 }
 
 fn build_function_name_map(functions: &[FunctionInfo]) -> HashMap<u64, String> {
@@ -531,6 +883,177 @@ fn suspicious_string_category(value: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+fn behavior_from_string_category(category: &str) -> (&'static str, &'static str) {
+    match category {
+        "url" => ("network", "medium"),
+        "command" => ("process_execution", "medium"),
+        "credential_hint" => ("credential_access", "medium"),
+        "platform_indicator" => ("filesystem", "low"),
+        _ => ("string_indicator", "low"),
+    }
+}
+
+fn classify_api(function: &str) -> Option<(&'static str, &'static str, &'static str)> {
+    let name = function.to_ascii_lowercase();
+
+    if matches_any(
+        &name,
+        &[
+            "createremotethread",
+            "ntcreatethreadex",
+            "writeprocessmemory",
+            "readprocessmemory",
+            "virtualallocex",
+            "openprocess",
+            "setthreadcontext",
+            "queueuserapc",
+        ],
+    ) {
+        Some((
+            "process_injection",
+            "high",
+            "process memory/thread manipulation API",
+        ))
+    } else if matches_any(
+        &name,
+        &[
+            "internetopen",
+            "internetconnect",
+            "internetopenurl",
+            "httpopenrequest",
+            "httpsendrequest",
+            "winhttpopen",
+            "winhttpconnect",
+            "winhttpsendrequest",
+            "wsastartup",
+            "connect",
+            "send",
+            "recv",
+            "urldownloadtofile",
+        ],
+    ) {
+        Some(("network", "medium", "network communication API"))
+    } else if matches_any(
+        &name,
+        &[
+            "regopenkey",
+            "regcreatekey",
+            "regsetvalue",
+            "regqueryvalue",
+            "regdeletekey",
+            "regdeletevalue",
+        ],
+    ) {
+        Some(("registry", "medium", "Windows registry access API"))
+    } else if matches_any(
+        &name,
+        &[
+            "createprocess",
+            "shellexecute",
+            "winexec",
+            "system",
+            "terminateprocess",
+        ],
+    ) {
+        Some((
+            "process_execution",
+            "medium",
+            "process execution/control API",
+        ))
+    } else if matches_any(
+        &name,
+        &[
+            "createfile",
+            "readfile",
+            "writefile",
+            "deletefile",
+            "movefile",
+            "copyfile",
+            "findfirstfile",
+            "findnextfile",
+            "getfileattributes",
+            "setfileattributes",
+        ],
+    ) {
+        Some(("filesystem", "medium", "file access or filesystem API"))
+    } else if matches_any(
+        &name,
+        &[
+            "virtualalloc",
+            "virtualprotect",
+            "heapalloc",
+            "rtlmovememory",
+            "rtlcopymemory",
+        ],
+    ) {
+        Some(("memory", "medium", "memory allocation/protection API"))
+    } else if matches_any(&name, &["loadlibrary", "getprocaddress", "ldrloaddll"]) {
+        Some((
+            "dynamic_loading",
+            "medium",
+            "runtime library loading or symbol lookup API",
+        ))
+    } else if matches_any(
+        &name,
+        &[
+            "isdebuggerpresent",
+            "checkremotedebuggerpresent",
+            "outputdebugstring",
+            "ntqueryinformationprocess",
+        ],
+    ) {
+        Some(("anti_debug", "medium", "debugger detection API"))
+    } else if matches_any(
+        &name,
+        &[
+            "cryptacquirecontext",
+            "cryptprotectdata",
+            "cryptdecrypt",
+            "cryptencrypt",
+            "bcrypt",
+            "openssl",
+        ],
+    ) {
+        Some(("crypto", "medium", "cryptography or protected-data API"))
+    } else if matches_any(
+        &name,
+        &[
+            "createservice",
+            "openservice",
+            "startservice",
+            "changeserviceconfig",
+            "schtasks",
+        ],
+    ) {
+        Some((
+            "persistence",
+            "high",
+            "service or scheduled-task persistence API",
+        ))
+    } else {
+        None
+    }
+}
+
+fn matches_any(name: &str, prefixes: &[&str]) -> bool {
+    prefixes
+        .iter()
+        .any(|candidate| api_name_matches(name, candidate))
+}
+
+fn api_name_matches(name: &str, candidate: &str) -> bool {
+    let candidate = candidate.to_ascii_lowercase();
+    name == candidate
+        || name == format!("{candidate}a")
+        || name == format!("{candidate}w")
+        || name == format!("{candidate}ex")
+        || name == format!("{candidate}exa")
+        || name == format!("{candidate}exw")
+        || name == format!("{candidate}2")
+        || name == format!("{candidate}2a")
+        || name == format!("{candidate}2w")
 }
 
 fn string_symbol(address: u64) -> String {
@@ -832,5 +1355,151 @@ mod tests {
         assert_eq!(package.strings_by_function[0].function_name, "sub_1000");
         assert_eq!(package.strings_by_function[0].strings.len(), 1);
         assert_eq!(package.strings_by_function[0].strings[0].symbol, "str_3000");
+    }
+
+    #[test]
+    fn package_groups_function_xrefs_with_callers_and_strings() {
+        let functions = vec![
+            function(
+                "sub_1000",
+                0x1000,
+                vec![
+                    x86(0x1000, "call", "2000h", Some(0x2000)),
+                    x86(0x1005, "lea", "rcx, [3000h]", None),
+                ],
+            ),
+            function("sub_2000", 0x2000, vec![x86(0x2000, "ret", "", None)]),
+            function(
+                "sub_3000",
+                0x3000,
+                vec![x86(0x3000, "call", "2000h", Some(0x2000))],
+            ),
+        ];
+        let strings = vec![string(0x3000, "C:\\temp\\payload.exe")];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 4,
+            basic_block_count: 3,
+            sections: &[],
+            functions: &functions,
+            strings: &strings,
+            imports: &[],
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        let callee = package
+            .xrefs
+            .functions
+            .iter()
+            .find(|xref| xref.function_name == "sub_2000")
+            .expect("callee xref exists");
+        assert_eq!(callee.called_by.len(), 2);
+        assert_eq!(callee.called_by[0].caller_name, "sub_1000");
+        assert_eq!(callee.called_by[1].caller_name, "sub_3000");
+
+        let caller = package
+            .xrefs
+            .functions
+            .iter()
+            .find(|xref| xref.function_name == "sub_1000")
+            .expect("caller xref exists");
+        assert_eq!(caller.calls_out.len(), 1);
+        assert_eq!(caller.strings.len(), 1);
+        assert_eq!(caller.strings[0].symbol, "str_3000");
+    }
+
+    #[test]
+    fn package_classifies_import_apis_into_behavior_report() {
+        let imports = vec![
+            ImportInfo {
+                name: "kernel32.dll".to_string(),
+                functions: vec![
+                    "CreateFileW".to_string(),
+                    "VirtualAlloc".to_string(),
+                    "WriteProcessMemory".to_string(),
+                    "CreateRemoteThread".to_string(),
+                ],
+            },
+            ImportInfo {
+                name: "wininet.dll".to_string(),
+                functions: vec!["InternetOpenUrlW".to_string()],
+            },
+        ];
+        let strings = vec![
+            string(0x3000, "https://example.test/dropper"),
+            string(0x3040, "powershell -nop"),
+        ];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 0,
+            basic_block_count: 0,
+            sections: &[],
+            functions: &[],
+            strings: &strings,
+            imports: &imports,
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        assert!(package
+            .api_insights
+            .iter()
+            .any(|api| api.function == "CreateFileW" && api.category == "filesystem"));
+        assert!(package
+            .api_insights
+            .iter()
+            .any(|api| api.function == "InternetOpenUrlW" && api.category == "network"));
+        assert!(package
+            .behavior_report
+            .categories
+            .iter()
+            .any(|category| category.name == "process_injection" && category.severity == "high"));
+        assert_eq!(package.behavior_report.risk_level, "high");
+        assert!(package.behavior_report.risk_score >= 60);
+    }
+
+    #[test]
+    fn api_classifier_avoids_common_prefix_false_positives() {
+        let imports = vec![
+            ImportInfo {
+                name: "user32.dll".to_string(),
+                functions: vec![
+                    "SendMessageW".to_string(),
+                    "SystemParametersInfoForDpi".to_string(),
+                ],
+            },
+            ImportInfo {
+                name: "advapi32.dll".to_string(),
+                functions: vec!["OpenProcessToken".to_string()],
+            },
+        ];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 0,
+            basic_block_count: 0,
+            sections: &[],
+            functions: &[],
+            strings: &[],
+            imports: &imports,
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        assert!(package.api_insights.is_empty());
+        assert!(package.behavior_report.categories.is_empty());
+        assert_eq!(package.behavior_report.risk_level, "none");
     }
 }

@@ -419,6 +419,7 @@ fn write_analysis_report_package(
     write_json_file(report_dir, "analysis_package.json", package)?;
     write_json_file(report_dir, "functions.json", &package.functions)?;
     write_json_file(report_dir, "call_graph.json", &package.call_graph)?;
+    write_json_file(report_dir, "xrefs.json", &package.xrefs)?;
     write_json_file(report_dir, "sections.json", &package.sections)?;
     write_json_file(report_dir, "cfg_summary.json", &package.cfg_summary)?;
     write_json_file(report_dir, "strings.json", &package.strings)?;
@@ -432,6 +433,8 @@ fn write_analysis_report_package(
         "suspicious_strings.json",
         &package.suspicious_strings,
     )?;
+    write_json_file(report_dir, "api_insights.json", &package.api_insights)?;
+    write_json_file(report_dir, "behavior_report.json", &package.behavior_report)?;
     write_json_file(report_dir, "imports.json", &package.imports)?;
     write_json_file(report_dir, "exports.json", &package.exports)?;
 
@@ -441,6 +444,15 @@ fn write_analysis_report_package(
         format!(
             "failed to write analysis report text {}",
             report_path.display()
+        )
+    })?;
+
+    let behavior_report = format_behavior_report_text(package);
+    let behavior_report_path = report_dir.join("behavior_report.txt");
+    std::fs::write(&behavior_report_path, behavior_report).with_context(|| {
+        format!(
+            "failed to write behavior report text {}",
+            behavior_report_path.display()
         )
     })?;
 
@@ -474,6 +486,10 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
         "Suspicious strings: {}\n",
         package.suspicious_strings.len()
     ));
+    report.push_str(&format!(
+        "Behavior risk: {} ({}/100)\n",
+        package.behavior_report.risk_level, package.behavior_report.risk_score
+    ));
     report.push_str(&format!("Functions: {}\n", summary.function_count));
     report.push_str(&format!("Strings: {}\n", summary.string_count));
     report.push_str(&format!("Imports: {}\n", summary.import_count));
@@ -489,6 +505,19 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
                 runtime.name,
                 runtime.confidence,
                 runtime.evidence.join("; ")
+            ));
+        }
+        report.push('\n');
+    }
+
+    if package.behavior_report.categories.is_empty() {
+        report.push_str("Behavior categories: none detected\n\n");
+    } else {
+        report.push_str("Behavior categories:\n");
+        for category in package.behavior_report.categories.iter().take(10) {
+            report.push_str(&format!(
+                "- {} ({}, {} findings)\n",
+                category.name, category.severity, category.evidence_count
             ));
         }
         report.push('\n');
@@ -511,16 +540,53 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str("- decompiled.c\n");
     report.push_str("- functions.json\n");
     report.push_str("- call_graph.json\n");
+    report.push_str("- xrefs.json\n");
     report.push_str("- sections.json\n");
     report.push_str("- cfg_summary.json\n");
     report.push_str("- strings.json\n");
     report.push_str("- strings_by_function.json\n");
     report.push_str("- suspicious_strings.json\n");
+    report.push_str("- api_insights.json\n");
+    report.push_str("- behavior_report.json\n");
+    report.push_str("- behavior_report.txt\n");
     report.push_str("- imports.json\n");
     report.push_str("- exports.json\n");
     report.push_str("- analysis_package.json\n");
     report.push_str("- runtime_report.txt\n");
     report.push_str("- artifacts_manifest.json\n");
+
+    report
+}
+
+fn format_behavior_report_text(package: &AnalysisReportPackage) -> String {
+    let mut report = String::new();
+    report.push_str("cyberm4fia-re behavior report\n");
+    report.push_str("===============================\n\n");
+    report.push_str(&format!("Risk: {}\n", package.behavior_report.risk_level));
+    report.push_str(&format!(
+        "Score: {}/100\n",
+        package.behavior_report.risk_score
+    ));
+    report.push_str(&format!(
+        "Findings: {}\n\n",
+        package.behavior_report.findings.len()
+    ));
+
+    if package.behavior_report.categories.is_empty() {
+        report.push_str("No high-signal behavior categories detected.\n");
+        return report;
+    }
+
+    report.push_str("Categories:\n");
+    for category in &package.behavior_report.categories {
+        report.push_str(&format!(
+            "- {} ({}, {} findings)\n",
+            category.name, category.severity, category.evidence_count
+        ));
+        for evidence in category.evidence.iter().take(5) {
+            report.push_str(&format!("  - {}\n", evidence));
+        }
+    }
 
     report
 }

@@ -22,14 +22,14 @@
   <img src="https://img.shields.io/badge/rust-1.75+-blue?style=flat-square&logo=rust" alt="rust">
   <img src="https://img.shields.io/badge/crates-12+-purple?style=flat-square" alt="crates">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/tests-100%20passing-orange?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/badge/tests-103%20passing-orange?style=flat-square" alt="tests">
   <img src="https://img.shields.io/github/last-commit/erkanrzgc/cyberm4fia-re?style=flat-square" alt="last commit">
 </p>
 
 <p align="center">
   <b>cyberm4fia-re</b> is a Rust-powered binary decompiler for ELF, PE, and Mach-O executables —
   disassembles x86 & ARM, detects runtime/language families, emits runtime-specific analysis reports,
-  extracts runtime artifacts,
+  extracts runtime artifacts, writes complete reverse-engineering report packages,
   builds control-flow graphs, detects functions, recovers simple stack variables, annotates string references,
   and generates syntax-safe readable C code.
 </p>
@@ -60,6 +60,7 @@
 | **Runtime Detection** | Python/PyInstaller/Nuitka, Dart/Flutter, .NET, Go, Rust, Electron/Node, JVM hints |
 | **Runtime Reports** | Actionable Python extraction, Dart/Flutter snapshot, CLR/IL, Go/Rust, Electron, JVM guidance |
 | **Runtime Artifact Extraction** | Writes `runtime_report.txt`, `artifacts_manifest.json`, Python `.pyc` candidates, and Dart/Flutter snapshot inventory |
+| **RE Report Package** | Writes `report.txt`, `decompiled.c`, `functions.json`, `strings.json`, `imports.json`, `exports.json`, and `analysis_package.json` |
 | **CFG Construction** | Control-flow graph via `petgraph` |
 | **Function Detection** | Entry point, exports, call targets, MSVC prologues |
 | **AST Lifting** | Pseudo-register and stack assignments (`mov`, `xor reg, reg`, `[rbp-8]`, …) |
@@ -121,12 +122,20 @@ cargo run --release -- -i <binary> -o output.c --optimization aggressive
 
 # Extract runtime-specific artifacts
 cargo run --release -- -i <binary> --extract-runtime-artifacts --artifacts-dir artifacts
+
+# Produce a complete reverse-engineering report package
+cargo run --release -- -i <binary> --report-dir out
 ```
 
 Runtime artifact extraction writes `runtime_report.txt`, `artifacts_manifest.json`,
 and any safely identified payloads such as Python `.pyc` candidates. Dart/Flutter
 AOT inputs are inventoried as snapshots/markers; exact Dart source recovery is
 not claimed.
+
+Report package mode writes `report.txt`, `decompiled.c`, `functions.json`,
+`strings.json`, `imports.json`, `exports.json`, and `analysis_package.json`.
+Function reports include direct x86/x64 call targets and exact string references
+when the binary exposes referenced string addresses.
 
 **Windows smoke test:**
 ```bash
@@ -168,6 +177,7 @@ cargo test --lib
 | `disasm::control_flow` | 6 |
 | `binary::parser` | 5 |
 | `analysis::functions` | 7 |
+| `analysis::report` | 3 |
 | `analysis::runtime` | 10 |
 | `analysis::runtime_artifacts` | 4 |
 | `analysis::runtime_report` | 4 |

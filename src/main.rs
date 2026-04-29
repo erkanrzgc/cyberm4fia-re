@@ -5,9 +5,10 @@ use clap::Parser;
 use decompiler::analysis::functions::FunctionDetectionInputs;
 use decompiler::analysis::runtime_artifacts::RuntimeArtifactStatus;
 use decompiler::analysis::{
-    FunctionDetector, RuntimeArtifactExtractor, RuntimeArtifactInputs, RuntimeArtifactResult,
-    RuntimeDetectionInputs, RuntimeDetector, RuntimeMatch, RuntimeReport, RuntimeReportBuilder,
-    RuntimeReportInputs, StringExtractor,
+    AnalysisReportBuilder, AnalysisReportInputs, AnalysisReportPackage, FunctionDetector,
+    RuntimeArtifactExtractor, RuntimeArtifactInputs, RuntimeArtifactResult, RuntimeDetectionInputs,
+    RuntimeDetector, RuntimeMatch, RuntimeReport, RuntimeReportBuilder, RuntimeReportInputs,
+    StringExtractor,
 };
 use decompiler::binary::parse_binary;
 use decompiler::decompiler::{
@@ -15,6 +16,7 @@ use decompiler::decompiler::{
     structure_functions_with_cfg, CGenerator, CGeneratorConfig, OptimizationLevel, Optimizer,
 };
 use decompiler::disasm::{ArmDisassembler, ControlFlowGraph, Instruction, X86Disassembler};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tracing::{error, info};
 
@@ -49,6 +51,10 @@ struct Cli {
     /// Directory for runtime artifacts (default: <input-stem>_artifacts)
     #[arg(long)]
     artifacts_dir: Option<String>,
+
+    /// Write a complete reverse-engineering report package to this directory
+    #[arg(long)]
+    report_dir: Option<String>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -61,6 +67,7 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     info!("Starting decompiler...");
+    let report_dir = cli.report_dir.as_deref().map(PathBuf::from);
 
     // Parse binary
     info!("Parsing binary: {}", cli.input);
@@ -178,7 +185,8 @@ fn main() -> anyhow::Result<()> {
         sections: &sections,
         strings: &all_strings,
     });
-    if cli.extract_runtime_artifacts {
+    let should_extract_runtime_artifacts = cli.extract_runtime_artifacts || report_dir.is_some();
+    let _artifact_result = if should_extract_runtime_artifacts {
         let artifact_result = RuntimeArtifactExtractor::new().extract(RuntimeArtifactInputs {
             runtime_matches: &runtime_matches,
             sections: &sections,
@@ -186,7 +194,11 @@ fn main() -> anyhow::Result<()> {
             exports: &exports,
             strings: &all_strings,
         });
-        let artifacts_dir = resolve_artifacts_dir(&cli.input, cli.artifacts_dir.as_deref());
+        let artifacts_dir = resolve_artifacts_dir(
+            &cli.input,
+            cli.artifacts_dir.as_deref(),
+            report_dir.as_deref(),
+        );
         write_runtime_artifacts(
             &artifacts_dir,
             &runtime_matches,
@@ -194,12 +206,30 @@ fn main() -> anyhow::Result<()> {
             &artifact_result,
         )?;
         info!("Runtime artifacts written to: {}", artifacts_dir.display());
-    }
+        Some(artifact_result)
+    } else {
+        None
+    };
 
     // Build control flow graph
     info!("Building control flow graph...");
     let cfg = ControlFlowGraph::from_instructions(&all_instructions);
     info!("CFG has {} basic blocks", cfg.blocks().len());
+    let analysis_package = report_dir.as_ref().map(|_| {
+        AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: &cli.input,
+            format: binary.format().name(),
+            architecture: binary.architecture(),
+            entry_point: binary.entry_point(),
+            instruction_count: all_instructions.len(),
+            basic_block_count: cfg.blocks().len(),
+            functions: &functions,
+            strings: &all_strings,
+            imports: &imports,
+            exports: &exports,
+            runtime_matches: &runtime_matches,
+        })
+    });
 
     // Generate C code
     info!("Generating C code...");
@@ -316,11 +346,33 @@ fn main() -> anyhow::Result<()> {
         output.push('\n');
     }
 
+    if let (Some(report_dir), Some(package)) = (report_dir.as_ref(), analysis_package.as_ref()) {
+        write_analysis_report_package(report_dir, package)?;
+        info!(
+            "Analysis report package written to: {}",
+            report_dir.display()
+        );
+    }
+
     // Write output
-    match cli.output {
-        Some(ref path) => {
+    match cli.output.as_ref() {
+        Some(path) => {
             std::fs::write(path, output)?;
             info!("Output written to: {}", path);
+        }
+        None if report_dir.is_some() => {
+            let report_dir = report_dir.as_ref().expect("checked report dir");
+            std::fs::create_dir_all(report_dir).with_context(|| {
+                format!("failed to create report directory {}", report_dir.display())
+            })?;
+            let output_path = report_dir.join("decompiled.c");
+            std::fs::write(&output_path, output).with_context(|| {
+                format!(
+                    "failed to write generated C output {}",
+                    output_path.display()
+                )
+            })?;
+            info!("Output written to: {}", output_path.display());
         }
         None => {
             println!("{}", output);
@@ -332,9 +384,16 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn resolve_artifacts_dir(input: &str, explicit_dir: Option<&str>) -> PathBuf {
+fn resolve_artifacts_dir(
+    input: &str,
+    explicit_dir: Option<&str>,
+    report_dir: Option<&Path>,
+) -> PathBuf {
     if let Some(path) = explicit_dir {
         return PathBuf::from(path);
+    }
+    if let Some(path) = report_dir {
+        return path.to_path_buf();
     }
 
     let stem = Path::new(input)
@@ -343,6 +402,100 @@ fn resolve_artifacts_dir(input: &str, explicit_dir: Option<&str>) -> PathBuf {
         .filter(|value| !value.is_empty())
         .unwrap_or("runtime");
     PathBuf::from(format!("{stem}_artifacts"))
+}
+
+fn write_analysis_report_package(
+    report_dir: &Path,
+    package: &AnalysisReportPackage,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(report_dir).with_context(|| {
+        format!(
+            "failed to create analysis report directory {}",
+            report_dir.display()
+        )
+    })?;
+
+    write_json_file(report_dir, "analysis_package.json", package)?;
+    write_json_file(report_dir, "functions.json", &package.functions)?;
+    write_json_file(report_dir, "strings.json", &package.strings)?;
+    write_json_file(report_dir, "imports.json", &package.imports)?;
+    write_json_file(report_dir, "exports.json", &package.exports)?;
+
+    let report = format_analysis_report_text(package);
+    let report_path = report_dir.join("report.txt");
+    std::fs::write(&report_path, report).with_context(|| {
+        format!(
+            "failed to write analysis report text {}",
+            report_path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn write_json_file<T: Serialize>(dir: &Path, name: &str, value: &T) -> anyhow::Result<()> {
+    let path = dir.join(name);
+    let json = serde_json::to_string_pretty(value)
+        .with_context(|| format!("failed to serialize {name}"))?;
+    std::fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
+    let summary = &package.summary;
+    let mut report = String::new();
+    report.push_str("cyberm4fia-re analysis report\n");
+    report.push_str("==============================\n\n");
+    report.push_str(&format!("Binary: {}\n", summary.input_path));
+    report.push_str(&format!("Format: {}\n", summary.format));
+    report.push_str(&format!("Architecture: {}\n", summary.architecture));
+    report.push_str(&format!("Entry point: 0x{:X}\n", summary.entry_point));
+    report.push_str(&format!("Instructions: {}\n", summary.instruction_count));
+    report.push_str(&format!("Basic blocks: {}\n", summary.basic_block_count));
+    report.push_str(&format!("Functions: {}\n", summary.function_count));
+    report.push_str(&format!("Strings: {}\n", summary.string_count));
+    report.push_str(&format!("Imports: {}\n", summary.import_count));
+    report.push_str(&format!("Exports: {}\n\n", summary.export_count));
+
+    if summary.runtime_hints.is_empty() {
+        report.push_str("Runtime hints: none detected\n\n");
+    } else {
+        report.push_str("Runtime hints:\n");
+        for runtime in &summary.runtime_hints {
+            report.push_str(&format!(
+                "- {} ({}%): {}\n",
+                runtime.name,
+                runtime.confidence,
+                runtime.evidence.join("; ")
+            ));
+        }
+        report.push('\n');
+    }
+
+    report.push_str("Top functions:\n");
+    for function in package.functions.iter().take(20) {
+        report.push_str(&format!(
+            "- {} @ 0x{:X}: {} instructions, {} calls, {} string refs{}\n",
+            function.name,
+            function.address,
+            function.instruction_count,
+            function.calls.len(),
+            function.string_refs.len(),
+            if function.is_export { ", export" } else { "" }
+        ));
+    }
+
+    report.push_str("\nFiles:\n");
+    report.push_str("- decompiled.c\n");
+    report.push_str("- functions.json\n");
+    report.push_str("- strings.json\n");
+    report.push_str("- imports.json\n");
+    report.push_str("- exports.json\n");
+    report.push_str("- analysis_package.json\n");
+    report.push_str("- runtime_report.txt\n");
+    report.push_str("- artifacts_manifest.json\n");
+
+    report
 }
 
 fn write_runtime_artifacts(

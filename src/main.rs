@@ -451,6 +451,11 @@ fn write_analysis_report_package(
         "suspicious_strings.json",
         &package.suspicious_strings,
     )?;
+    write_json_file(
+        report_dir,
+        "cyberchef_recipes.json",
+        &package.cyberchef_recipes,
+    )?;
     write_json_file(report_dir, "api_insights.json", &package.api_insights)?;
     write_json_file(report_dir, "behavior_report.json", &package.behavior_report)?;
     write_json_file(
@@ -508,6 +513,10 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str(&format!(
         "Suspicious strings: {}\n",
         package.suspicious_strings.len()
+    ));
+    report.push_str(&format!(
+        "CyberChef recipes: {}\n",
+        summary.cyberchef_recipe_count
     ));
     report.push_str(&format!(
         "Behavior risk: {} ({}/100)\n",
@@ -574,6 +583,7 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str("- strings.json\n");
     report.push_str("- strings_by_function.json\n");
     report.push_str("- suspicious_strings.json\n");
+    report.push_str("- cyberchef_recipes.json\n");
     report.push_str("- api_insights.json\n");
     report.push_str("- behavior_report.json\n");
     report.push_str("- behavior_report.txt\n");

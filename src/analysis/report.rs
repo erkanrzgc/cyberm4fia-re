@@ -1,5 +1,6 @@
 //! Structured reverse-engineering report package.
 
+use crate::analysis::cyberchef::{cyberchef_recipe_reports, CyberChefRecipeReport};
 use crate::analysis::functions::FunctionInfo;
 use crate::analysis::runtime::RuntimeMatch;
 use crate::analysis::strings::StringInfo;
@@ -36,6 +37,7 @@ pub struct AnalysisReportPackage {
     pub sections: Vec<SectionReport>,
     pub strings: Vec<StringReport>,
     pub suspicious_strings: Vec<SuspiciousStringReport>,
+    pub cyberchef_recipes: Vec<CyberChefRecipeReport>,
     pub strings_by_function: Vec<FunctionStringIndex>,
     pub api_insights: Vec<ApiInsightReport>,
     pub behavior_report: BehaviorReport,
@@ -55,6 +57,7 @@ pub struct AnalysisSummary {
     pub basic_block_count: usize,
     pub function_count: usize,
     pub string_count: usize,
+    pub cyberchef_recipe_count: usize,
     pub import_count: usize,
     pub export_count: usize,
     pub runtime_hints: Vec<RuntimeHintReport>,
@@ -303,6 +306,7 @@ impl AnalysisReportBuilder {
             .iter()
             .filter_map(suspicious_string_report)
             .collect::<Vec<_>>();
+        let cyberchef_recipes = cyberchef_recipe_reports(inputs.strings);
         let api_insights = api_insights(inputs.imports);
         let xrefs = xref_report(
             &functions,
@@ -323,6 +327,7 @@ impl AnalysisReportBuilder {
                 basic_block_count: inputs.basic_block_count,
                 function_count: inputs.functions.len(),
                 string_count: inputs.strings.len(),
+                cyberchef_recipe_count: cyberchef_recipes.len(),
                 import_count: inputs.imports.len(),
                 export_count: inputs.exports.len(),
                 runtime_hints: inputs
@@ -343,6 +348,7 @@ impl AnalysisReportBuilder {
             sections: inputs.sections.iter().map(section_report).collect(),
             strings: string_reports,
             suspicious_strings,
+            cyberchef_recipes,
             strings_by_function,
             api_insights,
             behavior_report,
@@ -1588,6 +1594,39 @@ mod tests {
         assert_eq!(package.functions[0].basic_block_estimate, 3);
         assert_eq!(package.suspicious_strings[0].address, 0x3000);
         assert_eq!(package.suspicious_strings[0].category, "url");
+    }
+
+    #[test]
+    fn package_suggests_cyberchef_recipes_for_encoded_strings() {
+        let strings = vec![
+            string(0x3000, "SGVsbG8sIHdvcmxkIQ=="),
+            string(0x3040, "kernel32.dll"),
+        ];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 0,
+            basic_block_count: 0,
+            sections: &[],
+            functions: &[],
+            strings: &strings,
+            imports: &[],
+            import_addresses: &[],
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        assert_eq!(package.cyberchef_recipes.len(), 1);
+        let recipe = &package.cyberchef_recipes[0];
+        assert_eq!(recipe.address, 0x3000);
+        assert_eq!(recipe.signal, "base64");
+        assert!(recipe
+            .recipe
+            .iter()
+            .any(|operation| operation.operation == "From Base64"));
     }
 
     #[test]

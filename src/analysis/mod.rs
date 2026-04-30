@@ -1,5 +1,6 @@
 //! Analysis module
 
+pub mod cyberchef;
 pub mod functions;
 pub mod patterns;
 pub mod report;
@@ -9,6 +10,7 @@ pub mod runtime_report;
 pub mod strings;
 pub mod types;
 
+pub use cyberchef::{cyberchef_recipe_reports, CyberChefOperation, CyberChefRecipeReport};
 pub use functions::{FunctionDetector, FunctionInfo};
 pub use patterns::{PatternMatch, PatternMatcher};
 pub use report::{AnalysisReportBuilder, AnalysisReportInputs, AnalysisReportPackage};

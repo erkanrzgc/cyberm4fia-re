@@ -22,7 +22,7 @@
   <img src="https://img.shields.io/badge/rust-1.75+-blue?style=flat-square&logo=rust" alt="rust">
   <img src="https://img.shields.io/badge/crates-12+-purple?style=flat-square" alt="crates">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/tests-114%20passing-orange?style=flat-square" alt="tests">
+  <img src="https://img.shields.io/badge/tests-117%20passing-orange?style=flat-square" alt="tests">
   <img src="https://img.shields.io/github/last-commit/erkanrzgc/cyberm4fia-re?style=flat-square" alt="last commit">
 </p>
 
@@ -63,7 +63,7 @@
 | **Runtime Artifact Extraction** | Writes `runtime_report.txt`, `artifacts_manifest.json`, Python `.pyc` candidates, PyInstaller CArchive cookie inventory, and Dart/Flutter snapshot inventory |
 | **RE Report Package** | Writes `report.txt`, `decompiled.c`, `functions.json`, `call_graph.json`, `xrefs.json`, `import_xrefs.json`, `sections.json`, `cfg_summary.json`, `strings.json`, `strings_by_function.json`, `suspicious_strings.json`, `api_insights.json`, `behavior_report.json`, `behavior_report.txt`, `import_addresses.json`, `imports.json`, `exports.json`, and `analysis_package.json` |
 | **Behavior Triage** | Groups imported APIs and suspicious strings into filesystem, registry, network, memory, dynamic loading, anti-debug, process execution, process injection, crypto, persistence, and credential categories |
-| **Import Resolution** | Records PE IAT thunk RVAs and resolves indirect calls like `call [IAT]` to `dll!ApiName` in call/XREF reports |
+| **Import Resolution** | Records PE IAT thunk RVAs and resolves indirect calls like `call [IAT]` to `dll!ApiName` in call/XREF reports and generated C |
 | **CFG Construction** | Control-flow graph via `petgraph` |
 | **Function Detection** | Entry point, exports, call targets, MSVC prologues |
 | **AST Lifting** | Pseudo-register and stack assignments (`mov`, `xor reg, reg`, `[rbp-8]`, …) |
@@ -73,7 +73,7 @@
 | **String References** | Remaining asm comments annotate matched addresses as `str_XXXX` symbols |
 | **C Syntax Hardening** | Escapes strings/comments and sanitizes emitted identifiers |
 | **Optimization** | Constant folding, dead-code elimination |
-| **C Generation** | Address-annotated C output with direct x86/x64 call recovery |
+| **C Generation** | Address-annotated C output with direct x86/x64 and import-aware call recovery |
 
 ---
 
@@ -143,9 +143,10 @@ Report package mode writes `report.txt`, `decompiled.c`, `functions.json`,
 and `analysis_package.json`. Function reports include direct x86/x64 call
 targets, PE import-address table call targets, grouped call graph edges,
 caller/callee XREFs, basic-block estimates, and exact string references when
-the binary exposes referenced string addresses. Behavior reports classify
-high-signal imports and suspicious strings for quick triage; they are
-indicators, not a malware verdict.
+the binary exposes referenced string addresses. Generated C also emits import
+declarations and turns resolvable IAT calls into readable API calls. Behavior
+reports classify high-signal imports and suspicious strings for quick triage;
+they are indicators, not a malware verdict.
 
 **Windows smoke test:**
 ```bash
@@ -194,7 +195,7 @@ cargo test --lib
 | `analysis::runtime_report` | 4 |
 | `analysis::strings` | 7 |
 | `decompiler::c_syntax` | 12 |
-| `decompiler::lifter` | 9 |
+| `decompiler::lifter` | 12 |
 | `decompiler::string_refs` | 6 |
 | `decompiler::structure` | 16 |
 

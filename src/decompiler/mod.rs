@@ -13,7 +13,10 @@ pub use c_generator::{CGenerator, CGeneratorConfig};
 pub use c_syntax::{
     escape_c_string, quote_c_string, sanitize_c_comment, sanitize_c_identifier, unique_c_identifier,
 };
-pub use lifter::{lift_function, lift_functions};
+pub use lifter::{
+    import_function_declarations, lift_function, lift_functions, lift_functions_with_imports,
+    ImportFunctionDeclaration,
+};
 pub use optimization::{OptimizationLevel, Optimizer};
 pub use string_refs::annotate_string_references;
 pub use structure::{

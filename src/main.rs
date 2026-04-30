@@ -12,8 +12,9 @@ use decompiler::analysis::{
 };
 use decompiler::binary::parse_binary;
 use decompiler::decompiler::{
-    annotate_string_references, escape_c_string, lift_functions, sanitize_c_comment,
-    structure_functions_with_cfg, CGenerator, CGeneratorConfig, OptimizationLevel, Optimizer,
+    annotate_string_references, escape_c_string, import_function_declarations,
+    lift_functions_with_imports, sanitize_c_comment, structure_functions_with_cfg, CGenerator,
+    CGeneratorConfig, OptimizationLevel, Optimizer,
 };
 use decompiler::disasm::{ArmDisassembler, ControlFlowGraph, Instruction, X86Disassembler};
 use serde::Serialize;
@@ -304,12 +305,26 @@ fn main() -> anyhow::Result<()> {
         output.push('\n');
     }
 
+    if !import_addresses.is_empty() {
+        output.push_str("// Import declarations\n");
+        for import in import_function_declarations(&import_addresses) {
+            output.push_str(&format!(
+                "// import: {}!{} @ 0x{:X}\n",
+                sanitize_c_comment(&import.library),
+                sanitize_c_comment(&import.function),
+                import.address
+            ));
+            output.push_str(&format!("void {}(void);\n", import.c_name));
+        }
+        output.push('\n');
+    }
+
     // Lift detected functions into AST form, then structure the unambiguous
     // instructions before emitting through the C generator. The lifter is the
     // single seam between discovery (FunctionInfo) and synthesis
     // (ast::Function); later passes such as structuring and type recovery
     // operate on the AST, not on raw instruction streams.
-    let mut ast_functions = lift_functions(&functions);
+    let mut ast_functions = lift_functions_with_imports(&functions, &import_addresses);
     structure_functions_with_cfg(&mut ast_functions, &cfg);
     annotate_string_references(&mut ast_functions, &all_strings);
 

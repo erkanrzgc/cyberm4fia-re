@@ -105,9 +105,9 @@ impl FunctionDetector {
             }
         }
 
-        for instr in instructions {
-            if instr.is_call() {
-                if let Some(target) = call_target(instr) {
+        for (idx, instr) in instructions.iter().enumerate() {
+            if instr.is_call() || looks_like_tail_jump(idx, instr, instructions, &addr_to_idx) {
+                if let Some(target) = branch_target(instr) {
                     seeds.insert(target);
                 }
             }
@@ -205,10 +205,39 @@ impl Default for FunctionDetector {
 }
 
 /// Extract a function-call target from an instruction, if structurally known.
-fn call_target(instr: &Instruction) -> Option<u64> {
+fn branch_target(instr: &Instruction) -> Option<u64> {
     match instr {
         Instruction::X86(x) => x.near_branch_target,
         Instruction::Arm(_) => None, // TODO: thread capstone detail for ARM
+    }
+}
+
+fn looks_like_tail_jump(
+    index: usize,
+    instr: &Instruction,
+    instructions: &[Instruction],
+    addr_to_idx: &HashMap<u64, usize>,
+) -> bool {
+    if !instr.is_unconditional_jump() {
+        return false;
+    }
+    let Some(target) = branch_target(instr) else {
+        return false;
+    };
+    let Some(target_idx) = addr_to_idx.get(&target).copied() else {
+        return false;
+    };
+    target_idx == index + 1
+        && instructions
+            .get(target_idx)
+            .map(|next| next.address() != instr.address().saturating_add(instruction_len(instr)))
+            .unwrap_or(false)
+}
+
+fn instruction_len(instr: &Instruction) -> u64 {
+    match instr {
+        Instruction::X86(x) => x.length as u64,
+        Instruction::Arm(a) => a.length as u64,
     }
 }
 
@@ -295,6 +324,28 @@ mod tests {
         assert!(addrs.contains(&0x1000), "entry point seeded");
         assert!(addrs.contains(&0x1010), "call target seeded");
         assert_eq!(fns.len(), 2);
+    }
+
+    #[test]
+    fn tail_jump_targets_are_seeded_as_function_starts() {
+        let instrs = vec![
+            nop(0x1000),
+            x86(0x1001, "jmp", &[0xE9, 0x0A, 0x00, 0x00, 0x00], Some(0x1010)),
+            nop(0x1010),
+            x86(0x1011, "ret", &[0xC3], None),
+        ];
+
+        let fns = FunctionDetector::new().detect(FunctionDetectionInputs {
+            instructions: &instrs,
+            entry_point: 0x1000,
+            exports: &[],
+            imports: &[],
+            architecture: "x64",
+        });
+
+        let addrs: Vec<u64> = fns.iter().map(|f| f.address).collect();
+        assert!(addrs.contains(&0x1000));
+        assert!(addrs.contains(&0x1010), "tail jmp target seeded");
     }
 
     #[test]

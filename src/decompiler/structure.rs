@@ -695,7 +695,7 @@ fn comment_condition(expression: &str, setup_disasm: &str, branch_disasm: &str) 
 }
 
 fn insert_pseudo_register_declarations(function: &mut Function) {
-    let existing: HashSet<String> = function
+    let mut existing: HashSet<String> = function
         .body
         .iter()
         .filter_map(|statement| match statement {
@@ -703,6 +703,12 @@ fn insert_pseudo_register_declarations(function: &mut Function) {
             _ => None,
         })
         .collect();
+    existing.extend(
+        function
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone()),
+    );
     let mut registers = BTreeSet::new();
     for statement in &function.body {
         collect_pseudo_registers_from_statement(statement, &mut registers);

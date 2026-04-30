@@ -32,6 +32,7 @@ pub struct AnalysisReportPackage {
     pub summary: AnalysisSummary,
     pub cfg_summary: CfgSummaryReport,
     pub functions: Vec<FunctionReport>,
+    pub jump_tables: Vec<JumpTableReport>,
     pub call_graph: Vec<CallGraphEdge>,
     pub xrefs: XrefReport,
     pub sections: Vec<SectionReport>,
@@ -90,10 +91,21 @@ pub struct FunctionReport {
     pub size: usize,
     pub instruction_count: usize,
     pub basic_block_estimate: usize,
+    pub function_kind: String,
     pub is_import: bool,
     pub is_export: bool,
     pub calls: Vec<CallReference>,
+    pub tail_calls: Vec<CallReference>,
     pub string_refs: Vec<StringReference>,
+}
+
+/// Indirect jump pattern that may represent a switch jump table.
+#[derive(Debug, Clone, Serialize)]
+pub struct JumpTableReport {
+    pub function_name: String,
+    pub function_address: u64,
+    pub instruction_address: u64,
+    pub expression: String,
 }
 
 /// One call graph edge, grouped by caller and callee.
@@ -299,6 +311,7 @@ impl AnalysisReportBuilder {
             })
             .collect::<Vec<_>>();
         let cfg_summary = cfg_summary(inputs.basic_block_count, inputs.functions);
+        let jump_tables = jump_table_reports(&functions, inputs.functions);
         let call_graph = call_graph_edges(&functions);
         let strings_by_function = strings_by_function(&functions);
         let suspicious_strings = inputs
@@ -343,6 +356,7 @@ impl AnalysisReportBuilder {
             },
             cfg_summary,
             functions,
+            jump_tables,
             call_graph,
             xrefs,
             sections: inputs.sections.iter().map(section_report).collect(),
@@ -759,15 +773,18 @@ fn function_report(
     strings: &HashMap<u64, &StringInfo>,
     import_addresses: &HashMap<u64, &ImportAddressInfo>,
 ) -> FunctionReport {
+    let tail_calls = tail_call_references(function, function_names, import_addresses);
     FunctionReport {
         name: function.name.clone(),
         address: function.address,
         size: function.size,
         instruction_count: function.instructions.len(),
         basic_block_estimate: basic_block_estimate(function),
+        function_kind: function_kind(function),
         is_import: function.is_import,
         is_export: function.is_export,
         calls: call_references(function, function_names, import_addresses),
+        tail_calls,
         string_refs: string_references(function, strings),
     }
 }
@@ -856,6 +873,109 @@ fn call_references(
         .collect()
 }
 
+fn tail_call_references(
+    function: &FunctionInfo,
+    function_names: &HashMap<u64, String>,
+    import_addresses: &HashMap<u64, &ImportAddressInfo>,
+) -> Vec<CallReference> {
+    function
+        .instructions
+        .iter()
+        .filter(|instruction| instruction.is_unconditional_jump())
+        .filter_map(|instruction| {
+            let target =
+                branch_target(instruction).or_else(|| import_branch_target(instruction))?;
+            Some(reference_for_target(
+                instruction.address(),
+                target,
+                function_names,
+                import_addresses,
+            ))
+        })
+        .collect()
+}
+
+fn reference_for_target(
+    instruction_address: u64,
+    target: u64,
+    function_names: &HashMap<u64, String>,
+    import_addresses: &HashMap<u64, &ImportAddressInfo>,
+) -> CallReference {
+    if let Some(import) = import_addresses.get(&target) {
+        return CallReference {
+            instruction_address,
+            target_address: target,
+            target_name: Some(format!("{}!{}", import.library, import.function)),
+            target_kind: "import".to_string(),
+            target_library: Some(import.library.clone()),
+            target_symbol: Some(import.function.clone()),
+        };
+    }
+
+    CallReference {
+        instruction_address,
+        target_address: target,
+        target_name: function_names.get(&target).cloned(),
+        target_kind: "function".to_string(),
+        target_library: None,
+        target_symbol: None,
+    }
+}
+
+fn function_kind(function: &FunctionInfo) -> String {
+    if function.instructions.len() == 1
+        && function
+            .instructions
+            .first()
+            .map(|instruction| instruction.is_unconditional_jump())
+            .unwrap_or(false)
+    {
+        "tailcall_thunk".to_string()
+    } else {
+        "normal".to_string()
+    }
+}
+
+fn jump_table_reports(
+    function_reports: &[FunctionReport],
+    functions: &[FunctionInfo],
+) -> Vec<JumpTableReport> {
+    let names = function_reports
+        .iter()
+        .map(|function| (function.address, function.name.clone()))
+        .collect::<HashMap<_, _>>();
+    let mut reports = Vec::new();
+
+    for function in functions {
+        for instruction in &function.instructions {
+            let Instruction::X86(instruction) = instruction else {
+                continue;
+            };
+            if !instruction.is_unconditional_jump()
+                || instruction.near_branch_target.is_some()
+                || !looks_like_jump_table_expression(&instruction.operands)
+            {
+                continue;
+            }
+            reports.push(JumpTableReport {
+                function_name: names
+                    .get(&function.address)
+                    .cloned()
+                    .unwrap_or_else(|| function.name.clone()),
+                function_address: function.address,
+                instruction_address: instruction.address,
+                expression: instruction.operands.clone(),
+            });
+        }
+    }
+
+    reports
+}
+
+fn looks_like_jump_table_expression(operands: &str) -> bool {
+    operands.contains('[') && operands.contains(']') && operands.contains('*')
+}
+
 fn string_references(
     function: &FunctionInfo,
     strings: &HashMap<u64, &StringInfo>,
@@ -898,6 +1018,32 @@ fn import_call_target(instruction: &Instruction) -> Option<u64> {
             instruction.length,
             &instruction.operands,
         ),
+        _ => None,
+    }
+}
+
+fn branch_target(instruction: &Instruction) -> Option<u64> {
+    match instruction {
+        Instruction::X86(instruction)
+            if instruction.is_call() || instruction.is_unconditional_jump() =>
+        {
+            instruction.near_branch_target
+        }
+        _ => None,
+    }
+}
+
+fn import_branch_target(instruction: &Instruction) -> Option<u64> {
+    match instruction {
+        Instruction::X86(instruction)
+            if instruction.is_call() || instruction.is_unconditional_jump() =>
+        {
+            referenced_memory_address(
+                instruction.address,
+                instruction.length,
+                &instruction.operands,
+            )
+        }
         _ => None,
     }
 }
@@ -1667,6 +1813,52 @@ mod tests {
         );
         assert_eq!(package.call_graph[0].call_count, 2);
         assert_eq!(package.call_graph[0].call_sites, vec![0x1000, 0x1005]);
+    }
+
+    #[test]
+    fn package_marks_tailcall_thunks_and_jump_table_candidates() {
+        let functions = vec![
+            function(
+                "sub_1000",
+                0x1000,
+                vec![x86(0x1000, "jmp", "2000h", Some(0x2000))],
+            ),
+            function("sub_2000", 0x2000, vec![x86(0x2000, "ret", "", None)]),
+            function(
+                "sub_3000",
+                0x3000,
+                vec![x86(0x3000, "jmp", "qword ptr [rax*8+4000h]", None)],
+            ),
+        ];
+
+        let package = AnalysisReportBuilder::new().build(AnalysisReportInputs {
+            input_path: "sample.exe",
+            format: "PE/EXE",
+            architecture: "x64",
+            entry_point: 0x1000,
+            instruction_count: 3,
+            basic_block_count: 3,
+            sections: &[],
+            functions: &functions,
+            strings: &[],
+            imports: &[],
+            import_addresses: &[],
+            exports: &[],
+            runtime_matches: &[],
+        });
+
+        let thunk = package
+            .functions
+            .iter()
+            .find(|function| function.name == "sub_1000")
+            .expect("thunk report exists");
+        assert_eq!(thunk.function_kind, "tailcall_thunk");
+        assert_eq!(thunk.tail_calls.len(), 1);
+        assert_eq!(thunk.tail_calls[0].target_name.as_deref(), Some("sub_2000"));
+
+        assert_eq!(package.jump_tables.len(), 1);
+        assert_eq!(package.jump_tables[0].function_name, "sub_3000");
+        assert_eq!(package.jump_tables[0].instruction_address, 0x3000);
     }
 
     #[test]

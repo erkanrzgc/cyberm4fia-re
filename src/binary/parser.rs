@@ -88,6 +88,11 @@ pub trait BinaryInfo {
         Vec::new()
     }
 
+    /// Get PE data directory entries when the format exposes them.
+    fn pe_data_directories(&self) -> Vec<PeDataDirectoryInfo> {
+        Vec::new()
+    }
+
     /// Get exports
     fn exports(&self) -> Vec<ExportInfo>;
 }
@@ -126,6 +131,15 @@ pub struct ImportAddressInfo {
     pub function: String,
     pub address: u64,
     pub ordinal: Option<u16>,
+}
+
+/// PE optional-header data directory entry.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PeDataDirectoryInfo {
+    pub name: String,
+    pub virtual_address: u64,
+    pub size: u64,
+    pub section: Option<String>,
 }
 
 /// Export information

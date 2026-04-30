@@ -18,16 +18,20 @@ pub use lifter::{
     ImportFunctionDeclaration,
 };
 pub use optimization::{OptimizationLevel, Optimizer};
+pub use signatures::recover_function_signatures;
 pub use string_refs::annotate_string_references;
 pub use structure::{
     structure_function, structure_function_with_cfg, structure_functions,
     structure_functions_with_cfg,
 };
+pub mod signatures;
 
 #[cfg(test)]
 mod structure_tests {
-    use super::ast::{BinaryOperator, Expression, Function, Statement};
+    use super::ast::{BinaryOperator, Expression, Function, Parameter, Statement};
     use super::structure::{structure_function, structure_function_with_cfg, structure_functions};
+    use super::{recover_function_signatures, CGenerator, CGeneratorConfig};
+    use crate::analysis::functions::FunctionInfo;
     use crate::analysis::TypeInfo;
     use crate::disasm::{ControlFlowGraph, X86Instruction};
 
@@ -56,6 +60,20 @@ mod structure_tests {
             operands: operands.to_string(),
             length: 1,
             near_branch_target: target,
+        }
+    }
+
+    fn function_info(name: &str, instructions: Vec<X86Instruction>) -> FunctionInfo {
+        FunctionInfo {
+            name: name.to_string(),
+            address: 0x1000,
+            size: instructions.iter().map(|instr| instr.length).sum(),
+            instructions: instructions
+                .into_iter()
+                .map(crate::disasm::control_flow::Instruction::X86)
+                .collect(),
+            is_import: false,
+            is_export: false,
         }
     }
 
@@ -244,6 +262,66 @@ mod structure_tests {
                 if matches!(target.as_ref(), Expression::Variable(name) if name == "rax")
                     && matches!(value.as_ref(), Expression::IntegerLiteral(2))
         ));
+    }
+
+    #[test]
+    fn cfg_path_does_not_redeclare_signature_parameters() {
+        let cfg = ControlFlowGraph::from_x86(vec![]);
+        let mut func = function_with(vec![inline(0x3000, "mov eax, ecx")]);
+        func.parameters.push(Parameter {
+            name: "rcx".to_string(),
+            type_info: TypeInfo::U64,
+        });
+
+        structure_function_with_cfg(&mut func, &cfg);
+
+        assert!(!func.body.iter().any(|statement| {
+            matches!(
+                statement,
+                Statement::VariableDeclaration { name, .. } if name == "rcx"
+            )
+        }));
+        assert!(func.body.iter().any(|statement| {
+            matches!(
+                statement,
+                Statement::VariableDeclaration { name, .. } if name == "rax"
+            )
+        }));
+    }
+
+    #[test]
+    fn signature_recovery_promotes_used_argument_registers_and_rax_return() {
+        let mut functions = vec![function_with(vec![
+            Statement::Expression(Expression::Assignment {
+                target: Box::new(Expression::Variable("rax".to_string())),
+                value: Box::new(Expression::Variable("rcx".to_string())),
+            }),
+            Statement::Return(None),
+        ])];
+        let infos = vec![function_info(
+            "sub_1000",
+            vec![
+                x86(0x1000, "mov", "rax, rcx", None),
+                x86(0x1001, "ret", "", None),
+            ],
+        )];
+
+        recover_function_signatures(&mut functions, &infos, "PE/EXE", "x64");
+
+        assert_eq!(functions[0].parameters.len(), 1);
+        assert_eq!(functions[0].parameters[0].name, "rcx");
+        assert_eq!(functions[0].return_type, TypeInfo::U64);
+        assert!(matches!(
+            functions[0].body.as_slice(),
+            [
+                Statement::Expression(Expression::Assignment { .. }),
+                Statement::Return(Some(Expression::Variable(name)))
+            ] if name == "rax"
+        ));
+
+        let mut generator = CGenerator::new(CGeneratorConfig::default());
+        let c = generator.generate_function(&functions[0]);
+        assert!(c.starts_with("uint64_t sub_1000(uint64_t rcx)"));
     }
 
     #[test]

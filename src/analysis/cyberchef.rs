@@ -24,6 +24,7 @@ pub struct CyberChefRecipeReport {
     pub signal: String,
     pub confidence: u8,
     pub reason: String,
+    pub deep_link: String,
     pub recipe: Vec<CyberChefOperation>,
 }
 
@@ -51,6 +52,7 @@ fn recipe_for_string(string: &StringInfo) -> Option<CyberChefRecipeReport> {
         signal: suggestion.signal.to_string(),
         confidence: suggestion.confidence,
         reason: suggestion.reason.to_string(),
+        deep_link: cyberchef_deep_link(&suggestion.recipe, &string.value),
         recipe: suggestion.recipe,
     })
 }
@@ -201,6 +203,58 @@ fn operation(operation: &str, args: Vec<Value>) -> CyberChefOperation {
     }
 }
 
+fn cyberchef_deep_link(recipe: &[CyberChefOperation], input: &str) -> String {
+    let recipe_json = serde_json::to_string(recipe).unwrap_or_else(|_| "[]".to_string());
+    format!(
+        "https://gchq.github.io/CyberChef/#recipe={}&input={}",
+        url_encode(&recipe_json),
+        url_encode(&base64_encode(input.as_bytes()))
+    )
+}
+
+fn url_encode(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push_str(&format!("%{:02X}", byte));
+        }
+    }
+    encoded
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    let mut chunks = bytes.chunks_exact(3);
+
+    for chunk in &mut chunks {
+        let n = ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | chunk[2] as u32;
+        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+        out.push(ALPHABET[(n & 0x3F) as usize] as char);
+    }
+
+    let rem = chunks.remainder();
+    if rem.len() == 1 {
+        let n = (rem[0] as u32) << 16;
+        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rem.len() == 2 {
+        let n = ((rem[0] as u32) << 16) | ((rem[1] as u32) << 8);
+        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
+        out.push('=');
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,6 +276,12 @@ mod tests {
         assert_eq!(recipes.len(), 1);
         assert_eq!(recipes[0].signal, "base64");
         assert_eq!(recipes[0].recipe[0].operation, "From Base64");
+        assert!(recipes[0]
+            .deep_link
+            .starts_with("https://gchq.github.io/CyberChef/#recipe="));
+        assert!(recipes[0]
+            .deep_link
+            .contains("&input=U0dWc2JHOHNJSGR2Y214a0lRPT0%3D"));
     }
 
     #[test]

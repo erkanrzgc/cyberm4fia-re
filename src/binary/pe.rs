@@ -1,7 +1,8 @@
 //! PE/EXE format parser
 
 use crate::binary::parser::{
-    BinaryInfo, ExportInfo, ImportAddressInfo, ImportInfo, SectionCharacteristics, SectionInfo,
+    BinaryInfo, ExportInfo, ImportAddressInfo, ImportInfo, PeDataDirectoryInfo,
+    SectionCharacteristics, SectionInfo,
 };
 use crate::binary::{BinaryFormat, BinaryParser};
 use crate::utils::error::{Error, Result};
@@ -31,6 +32,7 @@ pub struct PeBinary {
     sections: Vec<SectionInfo>,
     imports: Vec<ImportInfo>,
     import_addresses: Vec<ImportAddressInfo>,
+    pe_data_directories: Vec<PeDataDirectoryInfo>,
     exports: Vec<ExportInfo>,
 }
 
@@ -46,7 +48,7 @@ impl PeBinary {
 
         let entry_point = pe.entry as u64;
 
-        let sections = pe
+        let sections: Vec<SectionInfo> = pe
             .sections
             .iter()
             .map(|section| {
@@ -90,6 +92,27 @@ impl PeBinary {
                 }
             })
             .collect();
+        let pe_data_directories = pe
+            .header
+            .optional_header
+            .map(|optional_header| {
+                optional_header
+                    .data_directories
+                    .data_directories
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, directory)| {
+                        let (_, directory) = directory.as_ref()?;
+                        Some(PeDataDirectoryInfo {
+                            name: pe_data_directory_name(index).to_string(),
+                            virtual_address: directory.virtual_address as u64,
+                            size: directory.size as u64,
+                            section: section_for_rva(&sections, directory.virtual_address as u64),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
 
         // PE imports in goblin 0.8 are a flat Vec<Import> (one entry per function)
         // We group by DLL name for our ImportInfo shape.
@@ -136,6 +159,7 @@ impl PeBinary {
             sections,
             imports,
             import_addresses,
+            pe_data_directories,
             exports,
         }
     }
@@ -166,7 +190,54 @@ impl BinaryInfo for PeBinary {
         self.import_addresses.clone()
     }
 
+    fn pe_data_directories(&self) -> Vec<PeDataDirectoryInfo> {
+        self.pe_data_directories.clone()
+    }
+
     fn exports(&self) -> Vec<ExportInfo> {
         self.exports.clone()
+    }
+}
+
+fn section_for_rva(sections: &[SectionInfo], rva: u64) -> Option<String> {
+    sections
+        .iter()
+        .find(|section| {
+            let end = section.virtual_address.saturating_add(section.size.max(1));
+            rva >= section.virtual_address && rva < end
+        })
+        .map(|section| section.name.clone())
+}
+
+fn pe_data_directory_name(index: usize) -> &'static str {
+    match index {
+        0 => "export_table",
+        1 => "import_table",
+        2 => "resource_table",
+        3 => "exception_table",
+        4 => "certificate_table",
+        5 => "base_relocation_table",
+        6 => "debug_table",
+        7 => "architecture",
+        8 => "global_ptr",
+        9 => "tls_table",
+        10 => "load_config_table",
+        11 => "bound_import_table",
+        12 => "import_address_table",
+        13 => "delay_import_descriptor",
+        14 => "clr_runtime_header",
+        _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pe_data_directory_names_cover_resource_tls_and_reloc() {
+        assert_eq!(pe_data_directory_name(2), "resource_table");
+        assert_eq!(pe_data_directory_name(5), "base_relocation_table");
+        assert_eq!(pe_data_directory_name(9), "tls_table");
     }
 }

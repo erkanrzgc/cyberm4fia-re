@@ -10,11 +10,12 @@ use decompiler::analysis::{
     RuntimeDetector, RuntimeMatch, RuntimeReport, RuntimeReportBuilder, RuntimeReportInputs,
     StringExtractor,
 };
-use decompiler::binary::parse_binary;
+use decompiler::binary::{parse_binary, PeDataDirectoryInfo};
 use decompiler::decompiler::{
     annotate_string_references, escape_c_string, import_function_declarations,
-    lift_functions_with_imports, sanitize_c_comment, structure_functions_with_cfg, CGenerator,
-    CGeneratorConfig, OptimizationLevel, Optimizer,
+    lift_functions_with_imports, recover_function_signatures, sanitize_c_comment,
+    sanitize_c_identifier, structure_functions_with_cfg, CGenerator, CGeneratorConfig, Function,
+    OptimizationLevel, Optimizer,
 };
 use decompiler::disasm::{ArmDisassembler, ControlFlowGraph, Instruction, X86Disassembler};
 use serde::Serialize;
@@ -45,6 +46,18 @@ struct Cli {
     #[arg(short, long)]
     verbose: bool,
 
+    /// Suppress info logs
+    #[arg(long)]
+    quiet: bool,
+
+    /// Print the structured analysis package as JSON instead of C when no report directory is used
+    #[arg(long)]
+    json: bool,
+
+    /// Write only report files and skip generated C output
+    #[arg(long)]
+    only_report: bool,
+
     /// Extract runtime-specific artifacts and write a manifest/report directory
     #[arg(long)]
     extract_runtime_artifacts: bool,
@@ -60,9 +73,18 @@ struct Cli {
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    if cli.only_report && cli.report_dir.is_none() {
+        anyhow::bail!("--only-report requires --report-dir");
+    }
 
     // Initialize logging
-    let log_level = if cli.verbose { "debug" } else { "info" };
+    let log_level = if cli.quiet {
+        "warn"
+    } else if cli.verbose {
+        "debug"
+    } else {
+        "info"
+    };
     tracing_subscriber::fmt()
         .with_env_filter(format!("decompiler={}", log_level))
         .init();
@@ -140,6 +162,7 @@ fn main() -> anyhow::Result<()> {
     let exports = binary.exports();
     let imports = binary.imports();
     let import_addresses = binary.import_addresses();
+    let pe_data_directories = binary.pe_data_directories();
     let functions = function_detector.detect(FunctionDetectionInputs {
         instructions: &all_instructions,
         entry_point: binary.entry_point(),
@@ -217,7 +240,7 @@ fn main() -> anyhow::Result<()> {
     info!("Building control flow graph...");
     let cfg = ControlFlowGraph::from_instructions(&all_instructions);
     info!("CFG has {} basic blocks", cfg.blocks().len());
-    let analysis_package = report_dir.as_ref().map(|_| {
+    let analysis_package = (report_dir.is_some() || cli.json).then(|| {
         AnalysisReportBuilder::new().build(AnalysisReportInputs {
             input_path: &cli.input,
             format: binary.format().name(),
@@ -234,6 +257,29 @@ fn main() -> anyhow::Result<()> {
             runtime_matches: &runtime_matches,
         })
     });
+
+    if let (Some(report_dir), Some(package)) = (report_dir.as_ref(), analysis_package.as_ref()) {
+        write_analysis_report_package(report_dir, package, &pe_data_directories, !cli.only_report)?;
+        info!(
+            "Analysis report package written to: {}",
+            report_dir.display()
+        );
+    }
+
+    if cli.json {
+        let Some(package) = analysis_package.as_ref() else {
+            anyhow::bail!("failed to build JSON analysis package");
+        };
+        println!("{}", serde_json::to_string_pretty(package)?);
+        if report_dir.is_none() {
+            return Ok(());
+        }
+    }
+
+    if cli.only_report {
+        info!("Report-only mode complete");
+        return Ok(());
+    }
 
     // Generate C code
     info!("Generating C code...");
@@ -321,11 +367,17 @@ fn main() -> anyhow::Result<()> {
 
     // Lift detected functions into AST form, then structure the unambiguous
     // instructions before emitting through the C generator. The lifter is the
-    // single seam between discovery (FunctionInfo) and synthesis
+    // single boundary between discovery (FunctionInfo) and synthesis
     // (ast::Function); later passes such as structuring and type recovery
     // operate on the AST, not on raw instruction streams.
     let mut ast_functions = lift_functions_with_imports(&functions, &import_addresses);
     structure_functions_with_cfg(&mut ast_functions, &cfg);
+    recover_function_signatures(
+        &mut ast_functions,
+        &functions,
+        binary.format().name(),
+        binary.architecture(),
+    );
     annotate_string_references(&mut ast_functions, &all_strings);
 
     // Apply optimization (currently a no-op for InlineAsm statements, but
@@ -348,7 +400,8 @@ fn main() -> anyhow::Result<()> {
             info.address,
             if info.is_export { " (export)" } else { "" }
         ));
-        output.push_str(&format!("void {}(void);\n", func.name));
+        output.push_str(&function_prototype(func));
+        output.push('\n');
     }
     output.push('\n');
 
@@ -362,14 +415,6 @@ fn main() -> anyhow::Result<()> {
         ));
         output.push_str(&generator.generate_function(func));
         output.push('\n');
-    }
-
-    if let (Some(report_dir), Some(package)) = (report_dir.as_ref(), analysis_package.as_ref()) {
-        write_analysis_report_package(report_dir, package)?;
-        info!(
-            "Analysis report package written to: {}",
-            report_dir.display()
-        );
     }
 
     // Write output
@@ -425,6 +470,8 @@ fn resolve_artifacts_dir(
 fn write_analysis_report_package(
     report_dir: &Path,
     package: &AnalysisReportPackage,
+    pe_data_directories: &[PeDataDirectoryInfo],
+    include_decompiled: bool,
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(report_dir).with_context(|| {
         format!(
@@ -435,6 +482,7 @@ fn write_analysis_report_package(
 
     write_json_file(report_dir, "analysis_package.json", package)?;
     write_json_file(report_dir, "functions.json", &package.functions)?;
+    write_json_file(report_dir, "jump_tables.json", &package.jump_tables)?;
     write_json_file(report_dir, "call_graph.json", &package.call_graph)?;
     write_json_file(report_dir, "xrefs.json", &package.xrefs)?;
     write_json_file(report_dir, "import_xrefs.json", &package.xrefs.imports)?;
@@ -465,8 +513,9 @@ fn write_analysis_report_package(
     )?;
     write_json_file(report_dir, "imports.json", &package.imports)?;
     write_json_file(report_dir, "exports.json", &package.exports)?;
+    write_json_file(report_dir, "pe_directories.json", &pe_data_directories)?;
 
-    let report = format_analysis_report_text(package);
+    let report = format_analysis_report_text(package, pe_data_directories, include_decompiled);
     let report_path = report_dir.join("report.txt");
     std::fs::write(&report_path, report).with_context(|| {
         format!(
@@ -495,7 +544,40 @@ fn write_json_file<T: Serialize>(dir: &Path, name: &str, value: &T) -> anyhow::R
     Ok(())
 }
 
-fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
+fn function_prototype(function: &Function) -> String {
+    let params = if function.parameters.is_empty() {
+        "void".to_string()
+    } else {
+        let mut params = function
+            .parameters
+            .iter()
+            .map(|param| {
+                format!(
+                    "{} {}",
+                    param.type_info.to_c_type(),
+                    sanitize_c_identifier(&param.name, "arg")
+                )
+            })
+            .collect::<Vec<_>>();
+        if function.is_variadic {
+            params.push("...".to_string());
+        }
+        params.join(", ")
+    };
+
+    format!(
+        "{} {}({});",
+        function.return_type.to_c_type(),
+        sanitize_c_identifier(&function.name, "sub"),
+        params
+    )
+}
+
+fn format_analysis_report_text(
+    package: &AnalysisReportPackage,
+    pe_data_directories: &[PeDataDirectoryInfo],
+    include_decompiled: bool,
+) -> String {
     let summary = &package.summary;
     let mut report = String::new();
     report.push_str("cyberm4fia-re analysis report\n");
@@ -509,6 +591,10 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str(&format!(
         "Direct calls: {}\n",
         package.cfg_summary.direct_call_count
+    ));
+    report.push_str(&format!(
+        "Jump table candidates: {}\n",
+        package.jump_tables.len()
     ));
     report.push_str(&format!(
         "Suspicious strings: {}\n",
@@ -528,6 +614,10 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str(&format!(
         "Import addresses: {}\n",
         package.import_addresses.len()
+    ));
+    report.push_str(&format!(
+        "PE data directories: {}\n",
+        pe_data_directories.len()
     ));
     report.push_str(&format!("Exports: {}\n\n", summary.export_count));
 
@@ -573,8 +663,11 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     }
 
     report.push_str("\nFiles:\n");
-    report.push_str("- decompiled.c\n");
+    if include_decompiled {
+        report.push_str("- decompiled.c\n");
+    }
     report.push_str("- functions.json\n");
+    report.push_str("- jump_tables.json\n");
     report.push_str("- call_graph.json\n");
     report.push_str("- xrefs.json\n");
     report.push_str("- import_xrefs.json\n");
@@ -590,6 +683,7 @@ fn format_analysis_report_text(package: &AnalysisReportPackage) -> String {
     report.push_str("- import_addresses.json\n");
     report.push_str("- imports.json\n");
     report.push_str("- exports.json\n");
+    report.push_str("- pe_directories.json\n");
     report.push_str("- analysis_package.json\n");
     report.push_str("- runtime_report.txt\n");
     report.push_str("- artifacts_manifest.json\n");
